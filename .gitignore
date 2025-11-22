@@ -2,6 +2,7 @@
 __pycache__/
 *.py[codz]
 *$py.class
+*.parquet
 
 # C extensions
 *.so
@@ -194,6 +195,9 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
+# WRDS credentials
+.pgpass
+
 # Cursor
 #  Cursor is an AI-powered code editor. `.cursorignore` specifies files/directories to
 #  exclude from AI features like autocomplete and code analysis. Recommended for sensitive data
@@ -205,3 +209,13 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Project data/output directories (keep placeholders only)
+data_raw/
+data_processed/
+data_meta/
+outputs/
+!data_raw/.gitkeep
+!data_processed/.gitkeep
+!data_meta/.gitkeep
+!outputs/.gitkeep

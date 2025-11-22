@@ -1,0 +1,19 @@
+project:
+  name: QuantLab
+  base_path: "./"
+  environment: "dev"
+
+data:
+  universe: "SP500"
+  start_date: "2000-01-01"
+  end_date: "2025-01-01"
+  paths:
+    raw: "data_raw"
+    processed: "data_processed"
+    meta: "data_meta"
+    outputs: "outputs"
+
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  datefmt: "%Y-%m-%d %H:%M:%S"

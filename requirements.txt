@@ -1,0 +1,12 @@
+# Base runtime
+numpy>=1.26
+pandas>=2.1
+pyarrow>=14.0
+pyyaml>=6.0
+yfinance>=0.2
+
+# Optional sources/backends
+wrds>=3.1
+
+# Dev/test
+pytest>=7.4

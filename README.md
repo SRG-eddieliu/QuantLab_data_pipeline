@@ -1,4 +1,4 @@
-# QuantLab
+# QuantLab (work in progress)
 Quant research and portfolio construction framework for multi-factor equity strategies. Includes full pipeline from data ingestion, signal/factor research, alpha modeling, risk modeling, portfolio optimization, and backtesting. Designed to scale across alphas and strategies.
 
 ## Project Roadmap
@@ -55,6 +55,9 @@ quant-platform/
 ### **Phase 1 — Data Platform (Data Collection + Unified API)**
 
 **Goal:** Build reproducible unified data layer used by QR / PM / Backtest modules.
+
+**WRDS credentials:** For CRSP/Compustat pulls, create `~/.pgpass` with entry  
+`wrds-pgdata.wharton.upenn.edu:9737:wrds:YOUR_USERNAME:YOUR_PASSWORD` and `chmod 600 ~/.pgpass`. The pipeline will auto-use this; otherwise it falls back to `WRDS_USERNAME` / `WRDS_PASSWORD` env vars or interactive prompts.
 
 #### **Mandatory Datasets (stored as Parquet in `data_processed/`)**
 
