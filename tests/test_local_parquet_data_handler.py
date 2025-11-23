@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.data_pipeline.local_parquet_handler import LocalParquetDataHandler
+from src.data_pipeline.storage import LocalParquetDataHandler
 
 
 def _write(df: pd.DataFrame, path: Path) -> None:

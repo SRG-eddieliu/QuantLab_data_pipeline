@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from typing import Iterable, Tuple
+from typing import Iterable
 
 import numpy as np
 import pandas as pd
@@ -310,8 +310,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--root",
         type=Path,
-        default=Path(__file__).resolve().parents[2],
-        help="Project root containing data_processed/ and data_meta/ directories.",
+        default=Path(__file__).resolve().parents[3],
+        help="Project root containing data_processed/ and data_meta/ directories (defaults to repo root).",
     )
     parser.add_argument("--start", type=str, default=DEFAULT_START, help="Start date (YYYY-MM-DD)")
     parser.add_argument("--end", type=str, default=DEFAULT_END, help="End date (YYYY-MM-DD)")

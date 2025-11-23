@@ -2,12 +2,12 @@
 Quick demo script to validate the LocalParquetDataHandler.
 
 Run after ingesting data:
-    python -m src.data_pipeline.ingest_example_data
+    python -m src.data_pipeline.ingestion.example_data
 """
 
 from pathlib import Path
 
-from src.data_pipeline.local_parquet_handler import LocalParquetDataHandler
+from src.data_pipeline.storage import LocalParquetDataHandler
 
 
 def main() -> None:

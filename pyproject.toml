@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "quantlab"
 version = "0.0.1"
-description = "Quant research and portfolio construction framework."
+description = "Data pipeline and unified access layer for equity datasets."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [{ name = "QuantLab Team" }]

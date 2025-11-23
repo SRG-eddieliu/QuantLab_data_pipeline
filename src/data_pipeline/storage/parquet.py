@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Optional
 
 import pandas as pd
 
-from .data_handler import AssetLike, DataHandler, DateLike
+from ..interfaces import AssetLike, DataHandler, DateLike
 
 
 class LocalParquetDataHandler(DataHandler):
     """
-    Local parquet-backed implementation of DataHandler.
+    Local parquet-backed implementation of DataHandler for on-disk datasets.
 
-    Designed to keep research code decoupled from storage; swap out the
-    backend without touching downstream modules.
+    Keeps downstream processing decoupled from the physical storage layout so
+    the backend can be swapped without refactors.
     """
 
     def __init__(
@@ -151,4 +151,3 @@ class LocalParquetDataHandler(DataHandler):
         df = df[df["benchmark_name"] == benchmark]
         df = self._filter_dates(df, start_date, end_date)
         return df.sort_values("date").reset_index(drop=True)
-
