@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+import yaml
 
 from ..interfaces import AssetLike, DataHandler, DateLike
 
@@ -26,6 +27,15 @@ class LocalParquetDataHandler(DataHandler):
         self.processed_path = (Path(data_root) / processed_dir).resolve()
         self.meta_path = (Path(data_root) / meta_dir).resolve()
         self._assets_master_cache: Optional[pd.DataFrame] = None
+        self._field_map = self._load_field_mapping()
+
+    @staticmethod
+    def _load_field_mapping() -> dict[str, dict[str, str]]:
+        path = Path(__file__).resolve().parents[2] / "config" / "wrds_field_map.yml"
+        if not path.exists():
+            return {}
+        data = yaml.safe_load(path.read_text()) or {}
+        return {section: mapping or {} for section, mapping in data.items()}
 
     def _read_parquet(self, path: Path, parse_dates: Optional[list[str]] = None) -> pd.DataFrame:
         if not path.exists():
@@ -121,6 +131,9 @@ class LocalParquetDataHandler(DataHandler):
             df = df[df["report_date"] >= pd.to_datetime(start_date)]
         if end_date:
             df = df[df["report_date"] <= pd.to_datetime(end_date)]
+        mapping = self._field_map.get("fundamentals", {})
+        if mapping:
+            df = df.rename(columns={k: v for k, v in mapping.items() if k in df.columns})
         return df.sort_values(["report_date", "asset_id"]).reset_index(drop=True)
 
     def get_macro(
@@ -148,6 +161,12 @@ class LocalParquetDataHandler(DataHandler):
         end_date: DateLike | None = None,
     ) -> pd.DataFrame:
         df = self._read_parquet(self.processed_path / "benchmarks.parquet", parse_dates=["date"])
+        if "benchmark_name" not in df.columns:
+            # Backwards-compatibility: older files may lack this field
+            if "ticker" in df.columns:
+                df = df.rename(columns={"ticker": "benchmark_name"})
+            else:
+                df["benchmark_name"] = benchmark
         df = df[df["benchmark_name"] == benchmark]
         df = self._filter_dates(df, start_date, end_date)
         return df.sort_values("date").reset_index(drop=True)

@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "quantlab"
+name = "quantlab_data_pipeline"
 version = "0.0.1"
 description = "Data pipeline and unified access layer for equity datasets."
 readme = "README.md"

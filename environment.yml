@@ -1,0 +1,15 @@
+name: quantlab-data-pipeline
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python>=3.10
+  - numpy>=1.26
+  - pandas>=2.1
+  - pyarrow>=14.0
+  - pyyaml>=6.0
+  - yfinance>=0.2
+  - pip
+  - pip:
+      - wrds>=3.1
+      - pytest>=7.4

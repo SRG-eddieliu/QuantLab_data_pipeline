@@ -219,3 +219,7 @@ outputs/
 !data_processed/.gitkeep
 !data_meta/.gitkeep
 !outputs/.gitkeep
+
+# Local WRDS credentials (gitignored on purpose)
+config/wrds_credentials.yml
+config/fred_credentials.yml

@@ -2,7 +2,7 @@
 Quick demo script to validate the LocalParquetDataHandler.
 
 Run after ingesting data:
-    python -m src.data_pipeline.ingestion.example_data
+    python -m src.data_pipeline.ingestion.wrds_ingestion
 """
 
 from pathlib import Path
