@@ -56,6 +56,26 @@ class DataHandler(ABC):
         """Return fundamentals panels."""
 
     @abstractmethod
+    def get_analyst_consensus(
+        self,
+        tickers: AssetLike | None,
+        start_date: DateLike | None = None,
+        end_date: DateLike | None = None,
+        fields: Optional[list[str]] = None,
+    ) -> pd.DataFrame:
+        """Return analyst consensus recommendations (I/B/E/S 1-5 scale)."""
+
+    @abstractmethod
+    def get_analyst_ratings_history(
+        self,
+        tickers: AssetLike | None,
+        start_date: DateLike | None = None,
+        end_date: DateLike | None = None,
+        fields: Optional[list[str]] = None,
+    ) -> pd.DataFrame:
+        """Return analyst-level recommendation history (point-in-time)."""
+
+    @abstractmethod
     def get_macro(
         self,
         start_date: DateLike | None = None,
@@ -79,4 +99,3 @@ class DataHandler(ABC):
         end_date: DateLike | None = None,
     ) -> pd.DataFrame:
         """Return benchmark price/returns."""
-

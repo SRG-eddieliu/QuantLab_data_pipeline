@@ -5,12 +5,13 @@ Lean data ingestion and access layer for equity datasets (WRDS + FRED). Builds S
 ## What’s inside
 - Unified `DataHandler` interface for downstream consumers.
 - Local Parquet storage adapter (`LocalParquetDataHandler`).
-- WRDS-backed ingestion (`wrds_ingestion`) for S&P 500:
+- WRDS-backed ingestion (`wrds_ingestion`) for S&P 500 (prints step-by-step progress with timings):
   - CRSP DSF prices/returns (daily with `shrout`, `cfacpr` → `adj_close`), MSF monthly prices/returns.
   - S&P500 membership from `crsp.dsp500list` (permno-based, includes delisted names).
   - Delist adjustments from `crsp.StkDelists` (`delret`/`dlret` if present; returns adjusted via `(1+ret)*(1+delret)-1`; skips with warning if missing).
   - Compustat fundamentals via CCM link: revenue/sales/net income/total assets/common equity/preferred stock/long-term debt/cash flow from ops/capex/R&D (renamed by `config/wrds_field_map.yml`).
   - IPO date enrichment from `comp_global_daily.g_company` when available.
+  - Analyst recommendations from I/B/E/S (summary consensus + analyst-level history on 1-5 scale; consensus via `tr_ibes.recdsum`, history via `tr_ibes.recddet`/`det_rec`; mapped to CRSP with CUSIP → `ncusip` → `permno`).
   - Fama-French factors: `ff_all.fivefactors_daily` (MKT, SMB, HML, RMW, CMA, RF) plus MOM from `ff_all.factors_daily` when available.
   - Benchmark: CRSP S&P500 index (`crsp.dsp500`).
   - Macro: FRED API (CPI, unemployment, industrial production).
@@ -38,13 +39,15 @@ Key datasets written under `data_processed/`:
 - `prices_daily.parquet`, `returns_daily.parquet` (CRSP DSF, with `shrout`; delist-adjusted if delret present)
 - `returns_monthly.parquet` (CRSP MSF, delist-adjusted if delret present)
 - `fundamentals_quarterly.parquet` (Compustat via CCM link, renamed per `wrds_field_map.yml`)
+- `analyst_consensus.parquet` (I/B/E/S recommendations consensus; uses `tr_ibes.recdsum` when available, mapped to CRSP via CUSIP→`ncusip`→`permno`, includes buy/hold/sell %, mean/median/stdev and counts)
+- `analyst_ratings_history.parquet` (I/B/E/S analyst-level recommendation history; uses `tr_ibes.recddet` first, then `det_rec` variants if present; mapped to CRSP via CUSIP)
 - `macro_timeseries.parquet` (FRED API)
 - `style_factor_returns.parquet` (FF 5-factor + MOM when available)
 - `benchmarks.parquet` (CRSP S&P500)
 - `dividends_monthly.parquet` (CRSP MSEDIST with simple dividend_yield)
 - Metadata under `data_meta/`: `assets_master.parquet`, `universe_sp500.parquet`, `trading_calendar.parquet`
 - Manifests:
-  - [`reference/wrds_field_map.yml`](reference/wrds_field_map.yml) (wrds field mapping reference)
+  - [`config/wrds_field_map.yml`](config/wrds_field_map.yml) (wrds field mapping reference)
   - [`reference/field_manifest.csv`](reference/field_manifest.csv) (column-level manifest for each dataset)
 - Raw snapshots under `data_raw/` when `--save-raw`: prices (daily/monthly), delist tables, membership, assets, fundamentals, factors, macro, benchmark, dividends.
 
@@ -60,6 +63,8 @@ conda activate quantlab-data-pipeline
 ```bash
 python -m src.data_pipeline.ingestion.wrds_ingestion --root . --start 2000-01-01 --end 2025-01-01 --save-raw
 ```
+
+- The ingest script now logs step-by-step progress with timings (e.g., `[3/16] Build assets master ... ✔`), plus a final summary with total runtime.
 
 - WRDS auth options:
   - Preferred: `.pgpass` entry for `wrds-pgdata.wharton.upenn.edu:9737` (see WRDS docs).

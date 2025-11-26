@@ -95,6 +95,38 @@ def _build_fixture(tmp_path: Path) -> None:
     risk_free = pd.DataFrame({"date": dates, "rf": 0.0001})
     _write(risk_free, processed / "risk_free.parquet")
 
+    analyst_consensus = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2020-01-02", "2020-01-03"]),
+            "asset_id": [1, 2],
+            "ticker": ["AAA", "BBB"],
+            "mean_rating": [1.5, 3.2],
+            "median_rating": [1.0, 3.0],
+            "stdev_rating": [0.2, 0.5],
+            "num_analysts": [5, 6],
+            "rating_high": [1.0, 2.0],
+            "rating_low": [2.0, 4.0],
+            "num_buy": [3, 1],
+            "num_hold": [2, 3],
+            "num_sell": [0, 2],
+        }
+    )
+    _write(analyst_consensus, processed / "analyst_consensus.parquet")
+
+    analyst_history = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2020-01-02", "2020-01-04"]),
+            "asset_id": [1, 2],
+            "ticker": ["AAA", "BBB"],
+            "analyst_id": [100, 200],
+            "rating": [1.0, 3.0],
+            "action_code": ["INIT", "DOWN"],
+            "rating_text": ["Strong Buy", "Hold"],
+            "statistic_date": pd.to_datetime(["2020-01-02", "2020-01-04"]),
+        }
+    )
+    _write(analyst_history, processed / "analyst_ratings_history.parquet")
+
 
 def test_get_prices_filters(tmp_path: Path) -> None:
     _build_fixture(tmp_path)
@@ -147,3 +179,20 @@ def test_get_benchmark(tmp_path: Path) -> None:
     df = handler.get_benchmark_returns("^GSPC", "2020-01-02", "2020-01-04")
     assert not df.empty
     assert df["benchmark_name"].unique().tolist() == ["^GSPC"]
+
+
+def test_get_analyst_consensus(tmp_path: Path) -> None:
+    _build_fixture(tmp_path)
+    handler = LocalParquetDataHandler(tmp_path)
+    df = handler.get_analyst_consensus(["AAA"], start_date="2020-01-01", end_date="2020-01-03", fields=["mean_rating"])
+    assert set(df["asset_id"].unique()) == {1}
+    assert set(df.columns) == {"date", "asset_id", "ticker", "mean_rating"}
+    assert df["date"].min() >= pd.to_datetime("2020-01-01")
+
+
+def test_get_analyst_ratings_history(tmp_path: Path) -> None:
+    _build_fixture(tmp_path)
+    handler = LocalParquetDataHandler(tmp_path)
+    df = handler.get_analyst_ratings_history(["BBB"], start_date="2020-01-03", end_date="2020-01-05")
+    assert set(df["asset_id"].unique()) == {2}
+    assert df["date"].min() >= pd.to_datetime("2020-01-03")

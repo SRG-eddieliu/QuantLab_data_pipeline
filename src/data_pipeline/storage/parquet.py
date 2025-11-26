@@ -136,6 +136,36 @@ class LocalParquetDataHandler(DataHandler):
             df = df.rename(columns={k: v for k, v in mapping.items() if k in df.columns})
         return df.sort_values(["report_date", "asset_id"]).reset_index(drop=True)
 
+    def get_analyst_consensus(
+        self,
+        tickers: AssetLike | None,
+        start_date: DateLike | None = None,
+        end_date: DateLike | None = None,
+        fields: Optional[list[str]] = None,
+    ) -> pd.DataFrame:
+        df = self._read_parquet(self.processed_path / "analyst_consensus.parquet", parse_dates=["date"])
+        asset_ids = self._tickers_to_asset_ids(tickers) if tickers else None
+        if asset_ids:
+            df = df[df["asset_id"].isin(asset_ids)]
+        df = self._filter_dates(df, start_date, end_date)
+        df = self._filter_fields(df, fields, mandatory=["date", "asset_id", "ticker"])
+        return df.sort_values(["date", "asset_id"]).reset_index(drop=True)
+
+    def get_analyst_ratings_history(
+        self,
+        tickers: AssetLike | None,
+        start_date: DateLike | None = None,
+        end_date: DateLike | None = None,
+        fields: Optional[list[str]] = None,
+    ) -> pd.DataFrame:
+        df = self._read_parquet(self.processed_path / "analyst_ratings_history.parquet", parse_dates=["date"])
+        asset_ids = self._tickers_to_asset_ids(tickers) if tickers else None
+        if asset_ids:
+            df = df[df["asset_id"].isin(asset_ids)]
+        df = self._filter_dates(df, start_date, end_date)
+        df = self._filter_fields(df, fields, mandatory=["date", "asset_id", "ticker"])
+        return df.sort_values(["date", "asset_id"]).reset_index(drop=True)
+
     def get_macro(
         self,
         start_date: DateLike | None = None,

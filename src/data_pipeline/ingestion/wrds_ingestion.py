@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Tuple
 import os
+import time
 
 import pandas as pd
 import requests
@@ -14,6 +15,13 @@ import yaml
 
 DEFAULT_START = "2000-01-01"
 DEFAULT_END = "2025-01-01"
+
+
+def _sql_list(values: Iterable[object]) -> str:
+    """
+    Safely format a list of values for SQL IN clauses by escaping single quotes.
+    """
+    return "','".join(str(v).replace("'", "''") for v in values)
 
 
 def ensure_dirs(paths: Iterable[Path]) -> None:
@@ -84,7 +92,7 @@ def _build_sp500_universe_wrds(db, start: str, end: str) -> pd.DataFrame:
 
 
 def _build_assets_master_wrds(db, universe: pd.DataFrame) -> pd.DataFrame:
-    permnos = "','".join(str(p) for p in universe["permno"].unique())
+    permnos = _sql_list(universe["permno"].unique())
     query = f"""
         select distinct permno as asset_id,
                         ticker,
@@ -100,7 +108,7 @@ def _load_ipo_dates(db, universe: pd.DataFrame) -> pd.DataFrame:
     """
     Pull IPO dates from Compustat global company file and map to permno via CCM link.
     """
-    permnos = "','".join(str(p) for p in universe["permno"].unique())
+    permnos = _sql_list(universe["permno"].unique())
     query = f"""
         select distinct l.lpermno as asset_id,
                         g.ipodate
@@ -134,7 +142,7 @@ def _build_universe_daily(universe: pd.DataFrame, calendar: pd.DataFrame) -> pd.
 
 
 def _download_prices_wrds_full(db, universe: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
-    permnos = "','".join(str(p) for p in universe["permno"].unique())
+    permnos = _sql_list(universe["permno"].unique())
     query = f"""
         select d.date,
                d.permno,
@@ -157,7 +165,7 @@ def _download_prices_wrds_full(db, universe: pd.DataFrame, start: str, end: str)
 
 
 def _download_monthly_wrds(db, universe: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
-    permnos = "','".join(str(p) for p in universe["permno"].unique())
+    permnos = _sql_list(universe["permno"].unique())
     query = f"""
         select m.date,
                m.permno,
@@ -175,7 +183,7 @@ def _download_monthly_wrds(db, universe: pd.DataFrame, start: str, end: str) -> 
 
 
 def _load_dividends_monthly(db, universe: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
-    permnos = "','".join(str(p) for p in universe["permno"].unique())
+    permnos = _sql_list(universe["permno"].unique())
     query = f"""
         select permno as asset_id,
                distcd,
@@ -216,7 +224,7 @@ def _load_dlret_daily(db, universe: pd.DataFrame, start: str, end: str) -> pd.Da
         "deldistype",
         "deldlydt",
     ]
-    permnos = "','".join(str(p) for p in universe["permno"].unique())
+    permnos = _sql_list(universe["permno"].unique())
     query = f"""
         select permno as asset_id,
                delistingdt as date,
@@ -273,7 +281,7 @@ def _load_dlret_monthly(db, universe: pd.DataFrame, start: str, end: str) -> pd.
         "deldistype",
         "deldlydt",
     ]
-    permnos = "','".join(str(p) for p in universe["permno"].unique())
+    permnos = _sql_list(universe["permno"].unique())
     query = f"""
         select permno as asset_id,
                delistingdt as date,
@@ -350,7 +358,7 @@ def _build_monthly_returns_from_crsp(prices_m: pd.DataFrame, dlret_m: pd.DataFra
 
 
 def _build_fundamentals_wrds(db, universe: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
-    permnos = "','".join(str(p) for p in universe["permno"].unique())
+    permnos = _sql_list(universe["permno"].unique())
     link_sql = f"""
         select gvkey, lpermno as permno, linkdt, linkenddt
         from crsp.ccmxpf_linktable
@@ -411,6 +419,347 @@ def _build_fundamentals_wrds(db, universe: pd.DataFrame, start: str, end: str) -
     mapping = _load_field_mapping("fundamentals")
     fundamentals = fundamentals.rename(columns={k: v for k, v in mapping.items() if k in fundamentals.columns})
     return fundamentals
+
+
+def _load_idxref_mapping(db, universe: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
+    """
+    Map IBES to CRSP via CUSIP overlap only (tr_ibes.id cusip -> CRSP dsenames ncusip -> permno).
+
+    Sources: tr_ibes.id (sdates only; end date assumed open). iclink/idxref are not used per request.
+    """
+    permnos = _sql_list(universe["permno"].unique())
+    base_columns = ["asset_id", "ticker", "ibtic", "cname", "start_date", "end_date"]
+
+    def _normalize_cusip(series: pd.Series) -> pd.Series:
+        return series.astype(str).str.replace(r"[^A-Za-z0-9]", "", regex=True).str[:8]
+
+    # Primary: CUSIP mapping
+    def _load_idsum(query: str) -> pd.DataFrame:
+        try:
+            return db.raw_sql(query, date_cols=["start_date", "end_date"])
+        except Exception as exc:
+            print(f"[WARN] tr_ibes.id query failed ({exc});", file=sys.stderr)
+            return pd.DataFrame()
+
+    idsum_queries = [
+        # tr_ibes.id with only sdates; assume open-ended coverage
+        f"""
+        select ticker, cusip, cname, sdates as start_date, null as end_date
+        from tr_ibes.id
+        where sdates <= '{end}'
+        """,
+    ]
+    ibes_ids = pd.DataFrame()
+    for q in idsum_queries:
+        ibes_ids = _load_idsum(q)
+        if not ibes_ids.empty:
+            break
+    if ibes_ids.empty:
+        print("[WARN] tr_ibes.id unavailable for CUSIP mapping after retries; analyst datasets will be empty.", file=sys.stderr)
+        return pd.DataFrame(columns=base_columns)
+
+    ibes_ids["end_date"] = ibes_ids["end_date"].fillna(pd.Timestamp.max)
+    ibes_ids["cusip8"] = _normalize_cusip(ibes_ids["cusip"])
+    try:
+        crsp_names = db.raw_sql(
+            f"""
+            select permno as asset_id, ncusip, namedt as start_date, nameendt as end_date
+            from crsp.dsenames
+            where permno in ('{permnos}')
+              and ncusip is not null
+              and namedt <= '{end}'
+              and (nameendt is null or nameendt >= '{start}')
+            """,
+            date_cols=["start_date", "end_date"],
+        )
+    except Exception as exc:
+        print(f"[WARN] crsp.dsenames unavailable for CUSIP mapping ({exc}); analyst datasets will be empty.", file=sys.stderr)
+        return pd.DataFrame(columns=base_columns)
+    if crsp_names.empty:
+        print("[WARN] crsp.dsenames returned no rows for CUSIP mapping; analyst datasets will be empty.", file=sys.stderr)
+        return pd.DataFrame(columns=base_columns)
+
+    crsp_names["end_date"] = crsp_names["end_date"].fillna(pd.Timestamp.max)
+    crsp_names["cusip8"] = _normalize_cusip(crsp_names["ncusip"])
+
+    merged_cusip = ibes_ids.merge(crsp_names, on="cusip8", how="inner", suffixes=("_ibes", "_crsp"))
+    merged_cusip["start_date_final"] = merged_cusip[["start_date_ibes", "start_date_crsp"]].max(axis=1)
+    merged_cusip["end_date_final"] = merged_cusip[["end_date_ibes", "end_date_crsp"]].min(axis=1)
+    merged_cusip = merged_cusip[
+        (merged_cusip["start_date_final"] <= pd.to_datetime(end))
+        & (merged_cusip["end_date_final"] >= pd.to_datetime(start))
+    ]
+    if merged_cusip.empty:
+        print("[WARN] CUSIP mapping produced no matches after date filter; analyst datasets will be empty.", file=sys.stderr)
+        return pd.DataFrame(columns=base_columns)
+
+    mapped = pd.DataFrame(
+        {
+            "asset_id": merged_cusip["asset_id"],
+            "ticker": merged_cusip["ticker"],
+            "ibtic": None,
+            "cname": merged_cusip["cname"],
+            "start_date": merged_cusip["start_date_final"],
+            "end_date": merged_cusip["end_date_final"],
+        }
+    ).drop_duplicates(subset=["asset_id", "ticker", "start_date", "end_date"])
+    return mapped
+
+
+def _build_analyst_consensus_wrds(db, idxref: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
+    """
+    Pull I/B/E/S consensus recommendations (summary) and map to permno.
+
+    Industry convention: ratings are on a 1-5 scale (1=Strong Buy, 5=Sell).
+    """
+    if idxref.empty:
+        return pd.DataFrame(
+            columns=[
+                "date",
+                "asset_id",
+                "ticker",
+                "mean_rating",
+                "median_rating",
+                "stdev_rating",
+                "num_analysts",
+                "rating_high",
+                "rating_low",
+                "num_buy",
+                "num_hold",
+                "num_sell",
+            ]
+        )
+    tickers = _sql_list(idxref["ticker"].unique())
+    # Prefer tr_ibes.recdsum if available; fallback to ibes.rec_summary/ibesus.rec_summary if present.
+    candidates = [
+        ("tr_ibes", "recdsum", "statpers"),
+        ("ibes", "rec_summary", "statpers"),
+        ("ibesus", "rec_summary", "statpers"),
+    ]
+    recs = pd.DataFrame()
+    attempted = []
+    for schema, table, date_col in candidates:
+        try:
+            available = db.list_tables(schema)
+        except Exception:
+            available = []
+        if table not in available:
+            attempted.append(f"{schema}.{table} (absent)")
+            continue
+        sql = f"""
+            select *
+            from {schema}.{table}
+            where ticker in ('{tickers}')
+              and {date_col} between '{start}' and '{end}'
+        """
+        try:
+            recs = db.raw_sql(sql, date_cols=[date_col])
+            attempted.append(f"{schema}.{table} (ok)")
+            recs[date_col] = pd.to_datetime(recs[date_col])
+            break
+        except Exception as exc:
+            attempted.append(f"{schema}.{table} (error: {exc})")
+            recs = pd.DataFrame()
+            continue
+    if recs.empty:
+        print(
+            f"[WARN] No consensus table available; attempted: {attempted}. consensus dataset will be empty.",
+            file=sys.stderr,
+        )
+        return pd.DataFrame(
+            columns=[
+                "date",
+                "asset_id",
+                "ticker",
+                "mean_rating",
+                "median_rating",
+                "stdev_rating",
+                "num_analysts",
+                "rating_high",
+                "rating_low",
+                "num_buy",
+                "num_hold",
+                "num_sell",
+            ]
+        )
+    recs = recs.merge(idxref, on="ticker", how="left")
+    date_field = "statpers" if "statpers" in recs.columns else "date"
+    if date_field in recs.columns:
+        recs = recs[(recs[date_field] >= recs["start_date"]) & (recs[date_field] <= recs["end_date"])]
+    rename_map = {
+        # rec_summary-style
+        "statpers": "date",
+        "analys": "num_analysts",
+        "mean": "mean_rating",
+        "median": "median_rating",
+        "stdev": "stdev_rating",
+        "high": "rating_high",
+        "low": "rating_low",
+        "buy": "num_buy",
+        "hold": "num_hold",
+        "sell": "num_sell",
+        # recdsum-style
+        "meanrec": "mean_rating",
+        "medrec": "median_rating",
+        "buypct": "buy_percent",
+        "holdpct": "hold_percent",
+        "sellpct": "sell_percent",
+        "numrec": "num_analysts",
+        "stdev": "stdev_rating",
+        "numup": "num_up",
+        "numdown": "num_down",
+    }
+    recs = recs.rename(columns={k: v for k, v in rename_map.items() if k in recs.columns})
+    # Ensure all expected columns exist for downstream consumers
+    expected_cols = [
+        "date",
+        "asset_id",
+        "ticker",
+        "mean_rating",
+        "median_rating",
+        "stdev_rating",
+        "num_analysts",
+        "rating_high",
+        "rating_low",
+        "num_buy",
+        "num_hold",
+        "num_sell",
+        "buy_percent",
+        "hold_percent",
+        "sell_percent",
+        "num_up",
+        "num_down",
+    ]
+    for col in expected_cols:
+        if col not in recs.columns:
+            recs[col] = None
+    ordered_cols = [
+        "date",
+        "asset_id",
+        "ticker",
+        "mean_rating",
+        "median_rating",
+        "stdev_rating",
+        "num_analysts",
+        "rating_high",
+        "rating_low",
+        "num_buy",
+        "num_hold",
+        "num_sell",
+        "buy_percent",
+        "hold_percent",
+        "sell_percent",
+        "num_up",
+        "num_down",
+    ]
+    recs = recs[ordered_cols]
+    recs = recs.dropna(subset=["date", "asset_id"])
+    return recs
+
+
+def _build_analyst_ratings_history_wrds(db, idxref: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
+    """
+    Pull analyst-level recommendation history from I/B/E/S detail (point-in-time).
+    """
+    base_cols = [
+        "date",
+        "asset_id",
+        "ticker",
+        "analyst_id",
+        "rating",
+        "action_code",
+        "rating_text",
+        "statistic_date",
+    ]
+    if idxref.empty:
+        return pd.DataFrame(columns=base_cols)
+    tickers = _sql_list(idxref["ticker"].unique())
+    candidates = [
+        ("tr_ibes", "recddet"),  # Thomson/Refinitiv IBES detail
+        ("tr_ibes", "det_rec"),
+        ("ibes", "det_rec"),
+        ("ibesus", "det_rec"),
+    ]
+    detail = pd.DataFrame()
+    attempted = []
+    for schema, table in candidates:
+        try:
+            available = db.list_tables(schema)
+        except Exception:
+            available = []
+        if table not in available:
+            attempted.append(f"{schema}.{table} (absent)")
+            continue
+        date_field = "statpers" if table == "det_rec" else "anndats"
+        sql = f"""
+            select *
+            from {schema}.{table}
+            where ticker in ('{tickers}')
+              and {date_field} between '{start}' and '{end}'
+        """
+        try:
+            detail = db.raw_sql(sql)
+            attempted.append(f"{schema}.{table} (ok)")
+            break
+        except Exception as exc:
+            attempted.append(f"{schema}.{table} (error: {exc})")
+            detail = pd.DataFrame()
+            continue
+    if detail.empty:
+        print(
+            f"[WARN] No det_rec table available; attempted: {attempted}. Analyst rating history will be empty.",
+            file=sys.stderr,
+        )
+        return pd.DataFrame(columns=base_cols)
+    # Convert date-like columns conservatively
+    for col in ["statpers", "anndats", "anndats_act", "actdats", "revdats"]:
+        if col in detail.columns:
+            detail[col] = pd.to_datetime(detail[col])
+    detail = detail.merge(idxref, on="ticker", how="left")
+    # Date range alignment uses statpers or anndats depending on table
+    if "statpers" in detail.columns:
+        detail = detail[(detail["statpers"] >= detail["start_date"]) & (detail["statpers"] <= detail["end_date"])]
+    elif "anndats" in detail.columns:
+        detail = detail[(detail["anndats"] >= detail["start_date"]) & (detail["anndats"] <= detail["end_date"])]
+    # Select and normalize fields
+    date_col = None
+    for candidate in ("anndats_act", "anndats", "statpers", "actdats", "revdats"):
+        if candidate in detail.columns:
+            date_col = candidate
+            break
+    if date_col:
+        detail["date"] = detail[date_col]
+    detail["analyst_id"] = (
+        detail["analys"]
+        if "analys" in detail.columns
+        else detail["amaskcd"]
+        if "amaskcd" in detail.columns
+        else None
+    )
+    if "ireccd" in detail.columns:
+        detail["rating"] = detail["ireccd"]
+    elif "rec" in detail.columns:
+        detail["rating"] = detail["rec"]
+    else:
+        detail["rating"] = None
+    detail["action_code"] = (
+        detail["ereccd"] if "ereccd" in detail.columns else detail["actioncode"] if "actioncode" in detail.columns else None
+    )
+    detail["rating_text"] = (
+        detail["itext"] if "itext" in detail.columns else detail["recdef"] if "recdef" in detail.columns else None
+    )
+    detail["statistic_date"] = (
+        detail["statpers"]
+        if "statpers" in detail.columns
+        else detail["anndats"]
+        if "anndats" in detail.columns
+        else None
+    )
+    missing_cols = [c for c in base_cols if c not in detail.columns]
+    for col in missing_cols:
+        detail[col] = None
+    detail = detail[base_cols].dropna(subset=["date", "asset_id"])
+    return detail
 
 
 def _build_ff_factors_and_rf(db, start: str, end: str) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
@@ -544,46 +893,104 @@ def _collect_columns(path: Path) -> list[str]:
 
 
 def ingest(root: Path, start: str, end: str, save_raw: bool = False) -> None:
+    total_steps = 17
+    steps_done: list[tuple[str, float]] = []
+
+    def start_step(name: str) -> tuple[str, float]:
+        print(f"[{len(steps_done) + 1}/{total_steps}] {name} ...", flush=True)
+        return name, time.time()
+
+    def end_step(token: tuple[str, float]) -> None:
+        name, t0 = token
+        elapsed = time.time() - t0
+        steps_done.append((name, elapsed))
+        print(f"  ✔ {name} ({elapsed:.1f}s)", flush=True)
+
     processed_path = root / "data_processed"
     meta_path = root / "data_meta"
     raw_path = root / "data_raw"
-    ensure_dirs([processed_path, meta_path, raw_path])
+    reference_path = root / "reference"
+    ensure_dirs([processed_path, meta_path, raw_path, reference_path])
 
+    step = start_step("Connect to WRDS")
     db = _wrds_connection()
+    end_step(step)
 
+    step = start_step("Build SP500 universe")
     universe = _build_sp500_universe_wrds(db, start, end)
+    end_step(step)
+
+    step = start_step("Build assets master")
     assets_master = _build_assets_master_wrds(db, universe)
     ipo_dates = _load_ipo_dates(db, universe)
     if not ipo_dates.empty:
         assets_master = assets_master.merge(ipo_dates, on="asset_id", how="left")
+    end_step(step)
+
+    step = start_step("Build trading calendar and membership")
     calendar = _build_trading_calendar(start, end)
     membership = _build_universe_daily(universe, calendar)
+    end_step(step)
 
+    step = start_step("Build IBES↔CRSP mapping (CUSIP)")
+    idxref = _load_idxref_mapping(db, universe, start, end)
+    end_step(step)
+
+    step = start_step("Download daily prices/returns")
     prices = _download_prices_wrds_full(db, universe, start, end)
     prices = _attach_tickers(prices, assets_master)
     returns = _build_returns_from_crsp(prices)
-
-    fundamentals = _build_fundamentals_wrds(db, universe, start, end)
-    style_factors, risk_free, ff_raw = _build_ff_factors_and_rf(db, start, end)
-    macro = _build_macro_wrds(db, start, end)
-    benchmark = _build_benchmark_wrds(db, start, end)
     dlret_daily = _load_dlret_daily(db, universe, start, end)
     returns = _apply_delist_returns(returns, dlret_daily)
+    end_step(step)
+
+    step = start_step("Download fundamentals")
+    fundamentals = _build_fundamentals_wrds(db, universe, start, end)
+    end_step(step)
+
+    step = start_step("Download analyst consensus")
+    analyst_consensus = _build_analyst_consensus_wrds(db, idxref, start, end)
+    end_step(step)
+
+    step = start_step("Download analyst rating history")
+    analyst_ratings = _build_analyst_ratings_history_wrds(db, idxref, start, end)
+    end_step(step)
+
+    step = start_step("Download style factors and risk-free")
+    style_factors, risk_free, ff_raw = _build_ff_factors_and_rf(db, start, end)
+    end_step(step)
+
+    step = start_step("Download macro series")
+    macro = _build_macro_wrds(db, start, end)
+    end_step(step)
+
+    step = start_step("Download benchmark")
+    benchmark = _build_benchmark_wrds(db, start, end)
+    end_step(step)
+
+    step = start_step("Download monthly prices/returns")
     prices_monthly = _download_monthly_wrds(db, universe, start, end)
     dlret_monthly = _load_dlret_monthly(db, universe, start, end)
     returns_monthly = _build_monthly_returns_from_crsp(prices_monthly, dlret_monthly)
+    end_step(step)
+
+    step = start_step("Download dividends")
     dividends = _load_dividends_monthly(db, universe, start, end)
-    # compute simple dividend yield for listed names: divamt / close on pay date
     if not dividends.empty:
         div_merge = dividends.merge(prices_monthly[["asset_id", "date", "close"]], on=["asset_id", "date"], how="left")
         div_merge["dividend_yield"] = div_merge["divamt"] / div_merge["close"]
         dividends = div_merge
+    end_step(step)
 
+    step = start_step("Write raw snapshots" if save_raw else "Skip raw snapshots")
     if save_raw:
         write_parquet(prices, raw_path / "prices_raw.parquet")
         write_parquet(universe, raw_path / "sp500_membership_raw.parquet")
         write_parquet(assets_master, raw_path / "assets_master_raw.parquet")
         write_parquet(fundamentals, raw_path / "fundamentals_raw.parquet")
+        write_parquet(idxref, raw_path / "ibes_idxref_raw.parquet")
+        write_parquet(analyst_consensus, raw_path / "analyst_consensus_raw.parquet")
+        write_parquet(analyst_ratings, raw_path / "analyst_ratings_history_raw.parquet")
         write_parquet(ff_raw, raw_path / "style_factors_raw.parquet")
         write_parquet(macro, raw_path / "macro_raw.parquet")
         write_parquet(benchmark, raw_path / "benchmark_raw.parquet")
@@ -591,18 +998,24 @@ def ingest(root: Path, start: str, end: str, save_raw: bool = False) -> None:
         write_parquet(dlret_daily, raw_path / "dlret_daily_raw.parquet")
         write_parquet(dlret_monthly, raw_path / "dlret_monthly_raw.parquet")
         write_parquet(dividends, raw_path / "dividends_monthly_raw.parquet")
+    end_step(step)
 
+    step = start_step("Write processed datasets")
     write_parquet(prices, processed_path / "prices_daily.parquet")
     write_parquet(returns, processed_path / "returns_daily.parquet")
     write_parquet(membership, processed_path / "sp500_membership.parquet")
     write_parquet(fundamentals, processed_path / "fundamentals_quarterly.parquet")
+    write_parquet(analyst_consensus, processed_path / "analyst_consensus.parquet")
+    write_parquet(analyst_ratings, processed_path / "analyst_ratings_history.parquet")
     write_parquet(macro, processed_path / "macro_timeseries.parquet")
     write_parquet(risk_free, processed_path / "risk_free.parquet")
     write_parquet(style_factors, processed_path / "style_factor_returns.parquet")
     write_parquet(benchmark, processed_path / "benchmarks.parquet")
     write_parquet(returns_monthly, processed_path / "returns_monthly.parquet")
     write_parquet(dividends, processed_path / "dividends_monthly.parquet")
+    end_step(step)
 
+    step = start_step("Write metadata and manifests")
     write_parquet(assets_master, meta_path / "assets_master.parquet")
     write_parquet(membership.rename(columns={"in_sp500": "in_universe"}), meta_path / "universe_sp500.parquet")
     write_parquet(calendar, meta_path / "trading_calendar.parquet")
@@ -617,6 +1030,11 @@ def ingest(root: Path, start: str, end: str, save_raw: bool = False) -> None:
             "returns_monthly": {"source": "wrds_crsp_msf_ret_dlret", "path": str(processed_path / "returns_monthly.parquet")},
             "dividends_monthly": {"source": "wrds_crsp_msedist", "path": str(processed_path / "dividends_monthly.parquet")},
             "fundamentals_quarterly": {"source": "wrds_comp_funda", "path": str(processed_path / "fundamentals_quarterly.parquet")},
+            "analyst_consensus": {"source": "wrds_tr_ibes_recdsum", "path": str(processed_path / "analyst_consensus.parquet")},
+            "analyst_ratings_history": {
+                "source": "wrds_det_rec",
+                "path": str(processed_path / "analyst_ratings_history.parquet"),
+            },
             "macro_timeseries": {"source": "fred_api", "path": str(processed_path / "macro_timeseries.parquet")},
             "risk_free": {"source": "wrds_ff_factors_daily_rf", "path": str(processed_path / "risk_free.parquet")},
             "style_factor_returns": {"source": "wrds_ff_all_factors_daily", "path": str(processed_path / "style_factor_returns.parquet")},
@@ -630,6 +1048,9 @@ def ingest(root: Path, start: str, end: str, save_raw: bool = False) -> None:
                 "sp500_membership_raw": str(raw_path / "sp500_membership_raw.parquet") if save_raw else None,
                 "assets_master_raw": str(raw_path / "assets_master_raw.parquet") if save_raw else None,
                 "fundamentals_raw": str(raw_path / "fundamentals_raw.parquet") if save_raw else None,
+                "ibes_idxref_raw": str(raw_path / "ibes_idxref_raw.parquet") if save_raw else None,
+                "analyst_consensus_raw": str(raw_path / "analyst_consensus_raw.parquet") if save_raw else None,
+                "analyst_ratings_history_raw": str(raw_path / "analyst_ratings_history_raw.parquet") if save_raw else None,
                 "style_factors_raw": str(raw_path / "style_factors_raw.parquet") if save_raw else None,
                 "macro_raw": str(raw_path / "macro_raw.parquet") if save_raw else None,
                 "benchmark_raw": str(raw_path / "benchmark_raw.parquet") if save_raw else None,
@@ -682,10 +1103,18 @@ def ingest(root: Path, start: str, end: str, save_raw: bool = False) -> None:
 
     manifest_path_yml = meta_path / "field_manifest.yml"
     manifest_path_csv = meta_path / "field_manifest.csv"
+    manifest_path_csv_reference = reference_path / "field_manifest.csv"
     with manifest_path_yml.open("w", encoding="utf-8") as f:
         yaml.safe_dump(manifest, f)
-    pd.DataFrame(manifest).to_csv(manifest_path_csv, index=False)
-    print(f"Wrote field manifest to {manifest_path_yml} and {manifest_path_csv}")
+    df_manifest = pd.DataFrame(manifest)
+    df_manifest.to_csv(manifest_path_csv, index=False)
+    df_manifest.to_csv(manifest_path_csv_reference, index=False)
+    print(f"Wrote field manifest to {manifest_path_yml}, {manifest_path_csv}, and {manifest_path_csv_reference}")
+    end_step(step)
+
+    total_elapsed = sum(t for _, t in steps_done)
+    summary = ", ".join(f"{name} {t:.1f}s" for name, t in steps_done)
+    print(f"Done in {total_elapsed:.1f}s. Steps: {summary}")
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
