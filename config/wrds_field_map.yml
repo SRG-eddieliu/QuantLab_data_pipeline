@@ -1,6 +1,11 @@
 fundamentals:
   revt: revenue
+  sale: sales
   ni: net_income
   at: total_assets
+  ceq: common_equity
   dltt: total_debt_long_term
   oancf: cash_flow_from_operations
+  capx: capital_expenditures
+  pstk: preferred_stock
+  xrd: research_and_development

@@ -96,6 +96,29 @@ def _build_assets_master_wrds(db, universe: pd.DataFrame) -> pd.DataFrame:
     return db.raw_sql(query, date_cols=["first_date", "last_date"])
 
 
+def _load_ipo_dates(db, universe: pd.DataFrame) -> pd.DataFrame:
+    """
+    Pull IPO dates from Compustat global company file and map to permno via CCM link.
+    """
+    permnos = "','".join(str(p) for p in universe["permno"].unique())
+    query = f"""
+        select distinct l.lpermno as asset_id,
+                        g.ipodate
+        from crsp.ccmxpf_linktable l
+        join comp_global_daily.g_company g
+          on l.gvkey = g.gvkey
+        where l.lpermno in ('{permnos}')
+          and l.linktype in ('LU','LC')
+          and l.linkprim in ('P','C')
+    """
+    try:
+        df = db.raw_sql(query, date_cols=["ipodate"])
+        return df
+    except Exception as exc:  # pragma: no cover - optional table
+        print(f"[WARN] comp_global_daily.g_company IPO dates unavailable ({exc}); skipping IPO enrichment.", file=sys.stderr)
+        return pd.DataFrame(columns=["asset_id", "ipodate"])
+
+
 def _build_trading_calendar(start: str, end: str) -> pd.DataFrame:
     dates = pd.bdate_range(start=start, end=end)
     return pd.DataFrame({"date": dates, "is_trading_day": True})
@@ -121,6 +144,7 @@ def _download_prices_wrds_full(db, universe: pd.DataFrame, start: str, end: str)
                d.prc as close,
                d.cfacpr,
                d.ret,
+               d.shrout,
                d.vol as volume
         from crsp.dsf d
         where d.permno in ('{permnos}')
@@ -130,6 +154,158 @@ def _download_prices_wrds_full(db, universe: pd.DataFrame, start: str, end: str)
     df = df.rename(columns={"permno": "asset_id"})
     df["adj_close"] = df["close"] * df["cfacpr"]
     return df
+
+
+def _download_monthly_wrds(db, universe: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
+    permnos = "','".join(str(p) for p in universe["permno"].unique())
+    query = f"""
+        select m.date,
+               m.permno,
+               m.prc as close,
+               m.ret,
+               m.vol as volume,
+               m.shrout
+        from crsp.msf m
+        where m.permno in ('{permnos}')
+          and m.date between '{start}' and '{end}'
+    """
+    df = db.raw_sql(query, date_cols=["date"])
+    df = df.rename(columns={"permno": "asset_id"})
+    return df
+
+
+def _load_dividends_monthly(db, universe: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
+    permnos = "','".join(str(p) for p in universe["permno"].unique())
+    query = f"""
+        select permno as asset_id,
+               distcd,
+               divamt,
+               facpr,
+               facshr,
+               paydt as date
+        from crsp.msedist
+        where permno in ('{permnos}') and paydt between '{start}' and '{end}'
+    """
+    try:
+        df = db.raw_sql(query, date_cols=["date"])
+        return df
+    except Exception as exc:
+        print(f"[WARN] crsp.msedist not available ({exc}); skipping listed dividends.", file=sys.stderr)
+        return pd.DataFrame(columns=["asset_id", "distcd", "divamt", "facpr", "facshr", "date"])
+
+
+def _load_dlret_daily(db, universe: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
+    cols = [
+        "asset_id",
+        "date",
+        "deldtprc",
+        "deldtprcflg",
+        "delactiontype",
+        "delstatustype",
+        "delreasontype",
+        "delpaymenttype",
+        "delpermno",
+        "delpermco",
+        "delret",
+        "delretmisstype",
+        "delnextdt",
+        "delnextprc",
+        "delnextprcflg",
+        "delamtdt",
+        "deldivamt",
+        "deldistype",
+        "deldlydt",
+    ]
+    permnos = "','".join(str(p) for p in universe["permno"].unique())
+    query = f"""
+        select permno as asset_id,
+               delistingdt as date,
+               deldtprc,
+               deldtprcflg,
+               delactiontype,
+               delstatustype,
+               delreasontype,
+               delpaymenttype,
+               delpermno,
+               delpermco,
+               delret,
+               delretmisstype,
+               delnextdt,
+               delnextprc,
+               delnextprcflg,
+               delamtdt,
+               deldivamt,
+               deldistype,
+               deldlydt
+        from crsp.StkDelists
+        where permno in ('{permnos}') and delistingdt between '{start}' and '{end}'
+    """
+    try:
+        df = db.raw_sql(query, date_cols=["date"])
+        for col in cols:
+            if col not in df.columns:
+                df[col] = None
+        return df[cols]
+    except Exception as exc:
+        print(f"[WARN] crsp.StkDelists not available ({exc}); skipping daily delist returns.", file=sys.stderr)
+        return pd.DataFrame(columns=cols)
+
+
+def _load_dlret_monthly(db, universe: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
+    cols = [
+        "asset_id",
+        "date",
+        "deldtprc",
+        "deldtprcflg",
+        "delactiontype",
+        "delstatustype",
+        "delreasontype",
+        "delpaymenttype",
+        "delpermno",
+        "delpermco",
+        "delret",
+        "delretmisstype",
+        "delnextdt",
+        "delnextprc",
+        "delnextprcflg",
+        "delamtdt",
+        "deldivamt",
+        "deldistype",
+        "deldlydt",
+    ]
+    permnos = "','".join(str(p) for p in universe["permno"].unique())
+    query = f"""
+        select permno as asset_id,
+               delistingdt as date,
+               deldtprc,
+               deldtprcflg,
+               delactiontype,
+               delstatustype,
+               delreasontype,
+               delpaymenttype,
+               delpermno,
+               delpermco,
+               delret,
+               delretmisstype,
+               delnextdt,
+               delnextprc,
+               delnextprcflg,
+               delamtdt,
+               deldivamt,
+               deldistype,
+               deldlydt
+        from crsp.StkDelists
+        where permno in ('{permnos}') and delistingdt between '{start}' and '{end}'
+    """
+    try:
+        df = db.raw_sql(query, date_cols=["date"])
+        for col in cols:
+            if col not in df.columns:
+                df[col] = None
+        return df[cols]
+    except Exception as exc:
+        print(f"[WARN] crsp.StkDelists not available ({exc}); skipping monthly delist returns.", file=sys.stderr)
+        return pd.DataFrame(columns=cols)
 
 
 def _attach_tickers(prices: pd.DataFrame, assets_master: pd.DataFrame) -> pd.DataFrame:
@@ -144,6 +320,35 @@ def _build_returns_from_crsp(prices: pd.DataFrame) -> pd.DataFrame:
     return df[["date", "asset_id", "ticker", "ret_1d"]]
 
 
+def _apply_delist_returns(returns: pd.DataFrame, dlret: pd.DataFrame) -> pd.DataFrame:
+    if dlret.empty:
+        return returns
+    if "dlret" not in dlret.columns and "delret" in dlret.columns:
+        dlret = dlret.rename(columns={"delret": "dlret"})
+    if "dlret" not in dlret.columns:
+        dlret["dlret"] = 0.0
+    merged = returns.merge(dlret[["asset_id", "date", "dlret"]], on=["asset_id", "date"], how="left")
+    merged["dlret"] = merged["dlret"].fillna(0.0)
+    merged["ret_1d"] = (1 + merged["ret_1d"]) * (1 + merged["dlret"]) - 1
+    return merged.drop(columns=["dlret"])
+
+
+def _build_monthly_returns_from_crsp(prices_m: pd.DataFrame, dlret_m: pd.DataFrame) -> pd.DataFrame:
+    df = prices_m.rename(columns={"close": "price"})[["date", "asset_id", "ret", "price", "volume", "shrout"]].copy()
+    df["ret_1m"] = df["ret"]
+    if not dlret_m.empty:
+        # Some WRDS schemas may name the field delret instead of dlret
+        if "dlret" not in dlret_m.columns and "delret" in dlret_m.columns:
+            dlret_m = dlret_m.rename(columns={"delret": "dlret"})
+        if "dlret" not in dlret_m.columns:
+            dlret_m["dlret"] = 0.0
+        df = df.merge(dlret_m[["asset_id", "date", "dlret"]], on=["asset_id", "date"], how="left")
+        df["dlret"] = df["dlret"].fillna(0.0)
+        df["ret_1m"] = (1 + df["ret_1m"]) * (1 + df["dlret"]) - 1
+        df = df.drop(columns=["dlret"])
+    return df
+
+
 def _build_fundamentals_wrds(db, universe: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
     permnos = "','".join(str(p) for p in universe["permno"].unique())
     link_sql = f"""
@@ -156,22 +361,52 @@ def _build_fundamentals_wrds(db, universe: pd.DataFrame, start: str, end: str) -
     """
     links = db.raw_sql(link_sql, date_cols=["linkdt", "linkenddt"])
     gvkeys = "','".join(links["gvkey"].unique())
-    funda_sql = f"""
+    full_sql = f"""
         select gvkey, datadate,
-               revt, ni, at, dltt, oancf
+               revt, sale, ni, at, ceq, dltt, pstk, oancf, capx, xrd
         from comp.funda
         where gvkey in ('{gvkeys}')
           and indfmt='INDL' and datafmt='STD' and popsrc='D' and consol='C'
           and datadate between '{start}' and '{end}'
     """
-    funda = db.raw_sql(funda_sql, date_cols=["datadate"])
+    try:
+        funda = db.raw_sql(full_sql, date_cols=["datadate"])
+    except Exception as exc:
+        print(f"[WARN] comp.funda missing some requested fields ({exc}); falling back to core set.", file=sys.stderr)
+        core_sql = f"""
+            select gvkey, datadate,
+                   revt, ni, at, dltt, oancf
+            from comp.funda
+            where gvkey in ('{gvkeys}')
+              and indfmt='INDL' and datafmt='STD' and popsrc='D' and consol='C'
+              and datadate between '{start}' and '{end}'
+        """
+        funda = db.raw_sql(core_sql, date_cols=["datadate"])
     merged = funda.merge(links, on="gvkey", how="left")
     merged = merged[
         (merged["datadate"] >= merged["linkdt"])
         & ((merged["linkenddt"].isna()) | (merged["datadate"] <= merged["linkenddt"]))
     ]
     merged = merged.rename(columns={"datadate": "report_date", "permno": "asset_id"})
-    fundamentals = merged[["report_date", "asset_id", "revt", "ni", "at", "dltt", "oancf"]]
+    cols = [
+        "report_date",
+        "asset_id",
+        "revt",
+        "sale",
+        "ni",
+        "at",
+        "ceq",
+        "dltt",
+        "pstk",
+        "oancf",
+        "capx",
+        "xrd",
+    ]
+    missing_cols = [c for c in cols if c not in merged.columns]
+    if missing_cols:
+        for col in missing_cols:
+            merged[col] = None
+    fundamentals = merged[[c for c in cols if c in merged.columns]]
     # Apply friendly naming if available
     mapping = _load_field_mapping("fundamentals")
     fundamentals = fundamentals.rename(columns={k: v for k, v in mapping.items() if k in fundamentals.columns})
@@ -318,6 +553,9 @@ def ingest(root: Path, start: str, end: str, save_raw: bool = False) -> None:
 
     universe = _build_sp500_universe_wrds(db, start, end)
     assets_master = _build_assets_master_wrds(db, universe)
+    ipo_dates = _load_ipo_dates(db, universe)
+    if not ipo_dates.empty:
+        assets_master = assets_master.merge(ipo_dates, on="asset_id", how="left")
     calendar = _build_trading_calendar(start, end)
     membership = _build_universe_daily(universe, calendar)
 
@@ -329,6 +567,17 @@ def ingest(root: Path, start: str, end: str, save_raw: bool = False) -> None:
     style_factors, risk_free, ff_raw = _build_ff_factors_and_rf(db, start, end)
     macro = _build_macro_wrds(db, start, end)
     benchmark = _build_benchmark_wrds(db, start, end)
+    dlret_daily = _load_dlret_daily(db, universe, start, end)
+    returns = _apply_delist_returns(returns, dlret_daily)
+    prices_monthly = _download_monthly_wrds(db, universe, start, end)
+    dlret_monthly = _load_dlret_monthly(db, universe, start, end)
+    returns_monthly = _build_monthly_returns_from_crsp(prices_monthly, dlret_monthly)
+    dividends = _load_dividends_monthly(db, universe, start, end)
+    # compute simple dividend yield for listed names: divamt / close on pay date
+    if not dividends.empty:
+        div_merge = dividends.merge(prices_monthly[["asset_id", "date", "close"]], on=["asset_id", "date"], how="left")
+        div_merge["dividend_yield"] = div_merge["divamt"] / div_merge["close"]
+        dividends = div_merge
 
     if save_raw:
         write_parquet(prices, raw_path / "prices_raw.parquet")
@@ -338,6 +587,10 @@ def ingest(root: Path, start: str, end: str, save_raw: bool = False) -> None:
         write_parquet(ff_raw, raw_path / "style_factors_raw.parquet")
         write_parquet(macro, raw_path / "macro_raw.parquet")
         write_parquet(benchmark, raw_path / "benchmark_raw.parquet")
+        write_parquet(prices_monthly, raw_path / "prices_monthly_raw.parquet")
+        write_parquet(dlret_daily, raw_path / "dlret_daily_raw.parquet")
+        write_parquet(dlret_monthly, raw_path / "dlret_monthly_raw.parquet")
+        write_parquet(dividends, raw_path / "dividends_monthly_raw.parquet")
 
     write_parquet(prices, processed_path / "prices_daily.parquet")
     write_parquet(returns, processed_path / "returns_daily.parquet")
@@ -347,6 +600,8 @@ def ingest(root: Path, start: str, end: str, save_raw: bool = False) -> None:
     write_parquet(risk_free, processed_path / "risk_free.parquet")
     write_parquet(style_factors, processed_path / "style_factor_returns.parquet")
     write_parquet(benchmark, processed_path / "benchmarks.parquet")
+    write_parquet(returns_monthly, processed_path / "returns_monthly.parquet")
+    write_parquet(dividends, processed_path / "dividends_monthly.parquet")
 
     write_parquet(assets_master, meta_path / "assets_master.parquet")
     write_parquet(membership.rename(columns={"in_sp500": "in_universe"}), meta_path / "universe_sp500.parquet")
@@ -359,6 +614,8 @@ def ingest(root: Path, start: str, end: str, save_raw: bool = False) -> None:
         "datasets": {
             "prices_daily": {"source": "wrds_crsp_dsf", "path": str(processed_path / "prices_daily.parquet")},
             "returns_daily": {"source": "wrds_crsp_dsf_ret", "path": str(processed_path / "returns_daily.parquet")},
+            "returns_monthly": {"source": "wrds_crsp_msf_ret_dlret", "path": str(processed_path / "returns_monthly.parquet")},
+            "dividends_monthly": {"source": "wrds_crsp_msedist", "path": str(processed_path / "dividends_monthly.parquet")},
             "fundamentals_quarterly": {"source": "wrds_comp_funda", "path": str(processed_path / "fundamentals_quarterly.parquet")},
             "macro_timeseries": {"source": "fred_api", "path": str(processed_path / "macro_timeseries.parquet")},
             "risk_free": {"source": "wrds_ff_factors_daily_rf", "path": str(processed_path / "risk_free.parquet")},
@@ -376,6 +633,10 @@ def ingest(root: Path, start: str, end: str, save_raw: bool = False) -> None:
                 "style_factors_raw": str(raw_path / "style_factors_raw.parquet") if save_raw else None,
                 "macro_raw": str(raw_path / "macro_raw.parquet") if save_raw else None,
                 "benchmark_raw": str(raw_path / "benchmark_raw.parquet") if save_raw else None,
+                "prices_monthly_raw": str(raw_path / "prices_monthly_raw.parquet") if save_raw else None,
+                "dlret_daily_raw": str(raw_path / "dlret_daily_raw.parquet") if save_raw else None,
+                "dlret_monthly_raw": str(raw_path / "dlret_monthly_raw.parquet") if save_raw else None,
+                "dividends_monthly_raw": str(raw_path / "dividends_monthly_raw.parquet") if save_raw else None,
             },
         },
     }
@@ -393,27 +654,31 @@ def ingest(root: Path, start: str, end: str, save_raw: bool = False) -> None:
                     continue
                 path = Path(raw_path)
                 cols = _collect_columns(path) if path.exists() else []
-                manifest.append(
-                    {
-                        "dataset": raw_name,
-                        "type": "raw",
-                        "source": "raw_snapshot",
-                        "path": str(path),
-                        "columns": cols,
-                    }
-                )
+                cols = cols or ["<unknown>"]
+                for col in cols:
+                    manifest.append(
+                        {
+                            "dataset": raw_name,
+                            "type": "raw",
+                            "source": "raw_snapshot",
+                            "path": str(path),
+                            "column": col,
+                        }
+                    )
             continue
         path = Path(info.get("path", ""))
         cols = _collect_columns(path) if path.exists() else []
-        manifest.append(
-            {
-                "dataset": name,
-                "type": "processed",
-                "source": info.get("source"),
-                "path": str(path),
-                "columns": cols,
-            }
-        )
+        cols = cols or ["<unknown>"]
+        for col in cols:
+            manifest.append(
+                {
+                    "dataset": name,
+                    "type": "processed",
+                    "source": info.get("source"),
+                    "path": str(path),
+                    "column": col,
+                }
+            )
 
     manifest_path_yml = meta_path / "field_manifest.yml"
     manifest_path_csv = meta_path / "field_manifest.csv"
