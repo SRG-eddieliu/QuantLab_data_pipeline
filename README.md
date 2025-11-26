@@ -44,9 +44,8 @@ Key datasets written under `data_processed/`:
 - `dividends_monthly.parquet` (CRSP MSEDIST with simple dividend_yield)
 - Metadata under `data_meta/`: `assets_master.parquet`, `universe_sp500.parquet`, `trading_calendar.parquet`
 - Manifests:
-  - [`data_meta/data_sources.yml`](data_meta/data_sources.yml) (sources and paths written on each ingest)
-  - [`data_meta/field_manifest.yml`](data_meta/field_manifest.yml) / [`reference/field_manifest.csv`](reference/field_manifest.csv) (column-level manifest for each dataset)
-- Field mapping: `config/wrds_field_map.yml` (friendly names for WRDS fields; currently applied to fundamentals)
+  - [`reference/wrds_field_map.yml`](reference/wrds_field_map.yml) (wrds field mapping reference)
+  - [`reference/field_manifest.csv`](reference/field_manifest.csv) (column-level manifest for each dataset)
 - Raw snapshots under `data_raw/` when `--save-raw`: prices (daily/monthly), delist tables, membership, assets, fundamentals, factors, macro, benchmark, dividends.
 
 ## Usage
