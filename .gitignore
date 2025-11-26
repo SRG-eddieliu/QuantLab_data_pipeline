@@ -219,6 +219,8 @@ outputs/
 !data_processed/.gitkeep
 !data_meta/.gitkeep
 !outputs/.gitkeep
+!data_meta/field_manifest.csv
+!data_meta/field_manifest.yml
 
 # Local WRDS credentials (gitignored on purpose)
 config/wrds_credentials.yml
