@@ -202,6 +202,102 @@ def _load_dividends_monthly(db, universe: pd.DataFrame, start: str, end: str) ->
         return pd.DataFrame(columns=["asset_id", "distcd", "divamt", "facpr", "facshr", "date"])
 
 
+def _first_non_null(series: pd.Series):
+    non_null = series.dropna()
+    return non_null.iloc[0] if not non_null.empty else None
+
+
+def _dedupe_assets_master(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    df = df.copy()
+    grouped = []
+    for asset_id, g in df.groupby("asset_id"):
+        g_sorted = g.sort_values("last_date")
+        ld_series = g["last_date"].dropna()
+        grouped.append(
+            {
+                "asset_id": asset_id,
+                "ticker": _first_non_null(g_sorted["ticker"][::-1]),
+                "first_date": g["first_date"].min(),
+                "last_date": ld_series.max() if not ld_series.empty else None,
+                "ipodate": g["ipodate"].dropna().min() if "ipodate" in g.columns else None,
+            }
+        )
+    grouped = pd.DataFrame(grouped)
+    return grouped
+
+
+def _dedupe_consensus(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    agg_map = {
+        "ticker": _first_non_null,
+        "mean_rating": _first_non_null,
+        "median_rating": _first_non_null,
+        "stdev_rating": _first_non_null,
+        "num_analysts": _first_non_null,
+        "buy_percent": _first_non_null,
+        "hold_percent": _first_non_null,
+        "sell_percent": _first_non_null,
+        "num_up": _first_non_null,
+        "num_down": _first_non_null,
+        "usfirm": _first_non_null,
+        "ibes_official_ticker": _first_non_null,
+        "ibes_cusip": _first_non_null,
+        "company_name": _first_non_null,
+    }
+    deduped = df.groupby(["date", "asset_id"], as_index=False).agg(agg_map)
+    return deduped
+
+
+def _dedupe_ratings_history(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    agg_map = {
+        "ticker": _first_non_null,
+        "rating": _first_non_null,
+        "action_code": _first_non_null,
+        "rating_text": _first_non_null,
+        "statistic_date": _first_non_null,
+    }
+    deduped = df.groupby(["date", "asset_id", "analyst_id"], as_index=False).agg(agg_map)
+    return deduped
+
+
+def _clean_dividends(dividends: pd.DataFrame, prices_daily: pd.DataFrame) -> pd.DataFrame:
+    if dividends.empty:
+        return dividends
+    merged = dividends.copy()
+    prices_cols = ["asset_id", "date", "close"]
+    if prices_daily is not None and set(prices_cols).issubset(prices_daily.columns):
+        price_lookup = prices_daily[prices_cols].rename(columns={"close": "close_daily"})
+        merged = merged.merge(price_lookup, on=["asset_id", "date"], how="left")
+
+    # Normalize close column names and prefer daily over monthly
+    if "close_x" in merged.columns or "close_y" in merged.columns:
+        merged["close"] = merged.get("close_y").combine_first(merged.get("close_x"))
+        merged = merged.drop(columns=[c for c in ["close_x", "close_y"] if c in merged.columns])
+    if "close_daily" in merged.columns:
+        merged["close"] = merged.get("close_daily").combine_first(merged.get("close"))
+        merged = merged.drop(columns=["close_daily"])
+    if "close" not in merged.columns:
+        merged["close"] = None
+
+    def _agg(group: pd.DataFrame) -> pd.Series:
+        base = group.iloc[0].copy()
+        base["divamt"] = group["divamt"].sum(skipna=True)
+        base["distcd"] = _first_non_null(group["distcd"])
+        base["facpr"] = _first_non_null(group["facpr"])
+        base["facshr"] = _first_non_null(group["facshr"])
+        base["close"] = _first_non_null(group["close"])
+        base["dividend_yield"] = base["divamt"] / base["close"] if pd.notna(base.get("close")) else None
+        return base
+
+    cleaned = merged.groupby(["asset_id", "date"], as_index=False).apply(_agg).reset_index(drop=True)
+    return cleaned
+
+
 def _load_dlret_daily(db, universe: pd.DataFrame, start: str, end: str) -> pd.DataFrame:
     cols = [
         "asset_id",
@@ -530,42 +626,15 @@ def _build_analyst_consensus_wrds(db, idxref: pd.DataFrame, start: str, end: str
             ]
         )
     tickers = _sql_list(idxref["ticker"].unique())
-    # Prefer tr_ibes.recdsum if available; fallback to ibes.rec_summary/ibesus.rec_summary if present.
-    candidates = [
-        ("tr_ibes", "recdsum", "statpers"),
-        ("ibes", "rec_summary", "statpers"),
-        ("ibesus", "rec_summary", "statpers"),
-    ]
-    recs = pd.DataFrame()
-    attempted = []
-    for schema, table, date_col in candidates:
-        try:
-            available = db.list_tables(schema)
-        except Exception:
-            available = []
-        if table not in available:
-            attempted.append(f"{schema}.{table} (absent)")
-            continue
-        sql = f"""
-            select *
-            from {schema}.{table}
-            where ticker in ('{tickers}')
-              and {date_col} between '{start}' and '{end}'
-        """
-        try:
-            recs = db.raw_sql(sql, date_cols=[date_col])
-            attempted.append(f"{schema}.{table} (ok)")
-            recs[date_col] = pd.to_datetime(recs[date_col])
-            break
-        except Exception as exc:
-            attempted.append(f"{schema}.{table} (error: {exc})")
-            recs = pd.DataFrame()
-            continue
-    if recs.empty:
-        print(
-            f"[WARN] No consensus table available; attempted: {attempted}. consensus dataset will be empty.",
-            file=sys.stderr,
-        )
+    # Use tr_ibes.recdsum only; rec_summary tables are not available in this environment.
+    candidates = [("tr_ibes", "recdsum", "statpers")]
+    try:
+        available = db.list_tables(candidates[0][0])
+    except Exception:
+        available = []
+    schema, table, date_col = candidates[0]
+    if table not in available:
+        print(f"[WARN] {schema}.{table} not available; consensus dataset will be empty.", file=sys.stderr)
         return pd.DataFrame(
             columns=[
                 "date",
@@ -575,39 +644,80 @@ def _build_analyst_consensus_wrds(db, idxref: pd.DataFrame, start: str, end: str
                 "median_rating",
                 "stdev_rating",
                 "num_analysts",
-                "rating_high",
-                "rating_low",
-                "num_buy",
-                "num_hold",
-                "num_sell",
+                "buy_percent",
+                "hold_percent",
+                "sell_percent",
+                "num_up",
+                "num_down",
+                "usfirm",
+                "ibes_official_ticker",
+                "ibes_cusip",
+                "company_name",
             ]
         )
+    sql = f"""
+        select statpers,
+               ticker,
+               oftic,
+               cusip,
+               cname,
+               buypct,
+               holdpct,
+               sellpct,
+               meanrec,
+               medrec,
+               stdev,
+               numup,
+               numdown,
+               numrec,
+               usfirm
+        from {schema}.{table}
+        where ticker in ('{tickers}')
+          and {date_col} between '{start}' and '{end}'
+    """
+    try:
+        recs = db.raw_sql(sql, date_cols=[date_col])
+    except Exception as exc:
+        print(f"[WARN] {schema}.{table} query failed ({exc}); consensus dataset will be empty.", file=sys.stderr)
+        return pd.DataFrame(
+            columns=[
+                "date",
+                "asset_id",
+                "ticker",
+                "mean_rating",
+                "median_rating",
+                "stdev_rating",
+                "num_analysts",
+                "buy_percent",
+                "hold_percent",
+                "sell_percent",
+                "num_up",
+                "num_down",
+                "usfirm",
+                "ibes_official_ticker",
+                "ibes_cusip",
+                "company_name",
+            ]
+        )
+    recs[date_col] = pd.to_datetime(recs[date_col])
     recs = recs.merge(idxref, on="ticker", how="left")
     date_field = "statpers" if "statpers" in recs.columns else "date"
     if date_field in recs.columns:
         recs = recs[(recs[date_field] >= recs["start_date"]) & (recs[date_field] <= recs["end_date"])]
     rename_map = {
-        # rec_summary-style
         "statpers": "date",
-        "analys": "num_analysts",
-        "mean": "mean_rating",
-        "median": "median_rating",
-        "stdev": "stdev_rating",
-        "high": "rating_high",
-        "low": "rating_low",
-        "buy": "num_buy",
-        "hold": "num_hold",
-        "sell": "num_sell",
-        # recdsum-style
         "meanrec": "mean_rating",
         "medrec": "median_rating",
+        "stdev": "stdev_rating",
+        "numrec": "num_analysts",
         "buypct": "buy_percent",
         "holdpct": "hold_percent",
         "sellpct": "sell_percent",
-        "numrec": "num_analysts",
-        "stdev": "stdev_rating",
         "numup": "num_up",
         "numdown": "num_down",
+        "oftic": "ibes_official_ticker",
+        "cusip": "ibes_cusip",
+        "cname": "company_name",
     }
     recs = recs.rename(columns={k: v for k, v in rename_map.items() if k in recs.columns})
     # Ensure all expected columns exist for downstream consumers
@@ -619,16 +729,15 @@ def _build_analyst_consensus_wrds(db, idxref: pd.DataFrame, start: str, end: str
         "median_rating",
         "stdev_rating",
         "num_analysts",
-        "rating_high",
-        "rating_low",
-        "num_buy",
-        "num_hold",
-        "num_sell",
         "buy_percent",
         "hold_percent",
         "sell_percent",
         "num_up",
         "num_down",
+        "usfirm",
+        "ibes_official_ticker",
+        "ibes_cusip",
+        "company_name",
     ]
     for col in expected_cols:
         if col not in recs.columns:
@@ -641,16 +750,15 @@ def _build_analyst_consensus_wrds(db, idxref: pd.DataFrame, start: str, end: str
         "median_rating",
         "stdev_rating",
         "num_analysts",
-        "rating_high",
-        "rating_low",
-        "num_buy",
-        "num_hold",
-        "num_sell",
         "buy_percent",
         "hold_percent",
         "sell_percent",
         "num_up",
         "num_down",
+        "usfirm",
+        "ibes_official_ticker",
+        "ibes_cusip",
+        "company_name",
     ]
     recs = recs[ordered_cols]
     recs = recs.dropna(subset=["date", "asset_id"])
@@ -925,6 +1033,7 @@ def ingest(root: Path, start: str, end: str, save_raw: bool = False) -> None:
     ipo_dates = _load_ipo_dates(db, universe)
     if not ipo_dates.empty:
         assets_master = assets_master.merge(ipo_dates, on="asset_id", how="left")
+    assets_master = _dedupe_assets_master(assets_master)
     end_step(step)
 
     step = start_step("Build trading calendar and membership")
@@ -950,10 +1059,12 @@ def ingest(root: Path, start: str, end: str, save_raw: bool = False) -> None:
 
     step = start_step("Download analyst consensus")
     analyst_consensus = _build_analyst_consensus_wrds(db, idxref, start, end)
+    analyst_consensus = _dedupe_consensus(analyst_consensus)
     end_step(step)
 
     step = start_step("Download analyst rating history")
     analyst_ratings = _build_analyst_ratings_history_wrds(db, idxref, start, end)
+    analyst_ratings = _dedupe_ratings_history(analyst_ratings)
     end_step(step)
 
     step = start_step("Download style factors and risk-free")
@@ -978,8 +1089,7 @@ def ingest(root: Path, start: str, end: str, save_raw: bool = False) -> None:
     dividends = _load_dividends_monthly(db, universe, start, end)
     if not dividends.empty:
         div_merge = dividends.merge(prices_monthly[["asset_id", "date", "close"]], on=["asset_id", "date"], how="left")
-        div_merge["dividend_yield"] = div_merge["divamt"] / div_merge["close"]
-        dividends = div_merge
+        dividends = _clean_dividends(div_merge, prices)
     end_step(step)
 
     step = start_step("Write raw snapshots" if save_raw else "Skip raw snapshots")
