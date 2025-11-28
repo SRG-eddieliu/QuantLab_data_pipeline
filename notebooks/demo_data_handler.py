@@ -2,17 +2,14 @@
 Quick demo script to validate the LocalParquetDataHandler.
 
 Run after ingesting data:
-    python -m src.data_pipeline.ingestion.wrds_ingestion
+    python -m data_pipeline.ingestion.wrds_ingestion
 """
 
-from pathlib import Path
-
-from src.data_pipeline.storage import LocalParquetDataHandler
+from data_pipeline import LocalParquetDataHandler, default_data_root
 
 
 def main() -> None:
-    project_root = Path(__file__).resolve().parents[1]
-    handler = LocalParquetDataHandler(project_root)
+    handler = LocalParquetDataHandler(default_data_root())
 
     print("Universe on 2020-01-02:")
     print(handler.get_universe("2020-01-02").head())

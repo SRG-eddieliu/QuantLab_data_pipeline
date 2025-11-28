@@ -25,9 +25,6 @@ QuantLab_data_pipeline/
     wrds_credentials.yml         # WRDS creds (gitignored; use example)
     fred_credentials.yml         # FRED API key (gitignored; use example)
     wrds_field_map.yml           # Friendly field renames (e.g., fundamentals)
-  data_raw/                      # Raw snapshots (only when --save-raw)
-  data_processed/                # Normalized Parquet tables
-  data_meta/                     # Metadata (assets, calendars, manifest)
   src/data_pipeline/
     ingestion/wrds_ingestion.py  # Main ingestion entrypoint (WRDS + FRED)
     storage/parquet.py           # LocalParquetDataHandler
@@ -35,7 +32,21 @@ QuantLab_data_pipeline/
   notebooks/
 ```
 
-Key datasets written under `data_processed/`:
+**Data root**: outputs are written outside the repo by default under a sibling `../quantlab_data/` folder (or whatever `QUANTLAB_DATA_ROOT` points to). That directory will contain `data_processed/`, `data_meta/`, `data_raw/`, and `reference/`. Keep datasets out of the code repo. Set a custom location via `export QUANTLAB_DATA_ROOT=/path/to/quantlab_data`.
+
+**Data root resolution order**
+1) Env var `QUANTLAB_DATA_ROOT`
+2) Sibling `../quantlab_data` next to this repo (detected via `pyproject.toml`)
+3) Fallback: `./quantlab_data` under the current working directory
+
+**Outputs under the data root**
+- `data_processed/`: canonical, cleaned parquet tables (prices, returns, fundamentals, factors, macro, benchmarks, analyst data, dividends)
+- `data_meta/`: metadata (`assets_master.parquet`, `universe_sp500.parquet`, `trading_calendar.parquet`, `data_sources.yml`, `field_manifest.*`)
+- `data_raw/`: optional raw snapshots when `--save-raw` is set
+- `reference/`: copy of `field_manifest.csv` for easy browsing
+- `logs/`: per-run ingestion logs (`wrds_ingestion_<timestamp>.log`)
+
+Key datasets written under `data_processed/` (in the shared data root):
 - `prices_daily.parquet`, `returns_daily.parquet` (CRSP DSF, with `shrout`; delist-adjusted if delret present)
 - `returns_monthly.parquet` (CRSP MSF, delist-adjusted if delret present)
 - `fundamentals_quarterly.parquet` (Compustat via CCM link, renamed per `wrds_field_map.yml`)
@@ -49,7 +60,7 @@ Key datasets written under `data_processed/`:
 - Manifests:
   - [`config/wrds_field_map.yml`](config/wrds_field_map.yml) (wrds field mapping reference)
   - [`reference/field_manifest.csv`](reference/field_manifest.csv) (column-level manifest for each dataset)
-- Raw snapshots under `data_raw/` when `--save-raw`: prices (daily/monthly), delist tables, membership, assets, fundamentals, factors, macro, benchmark, dividends.
+- Raw snapshots under `data_raw/` (located in the data root) when `--save-raw`: prices (daily/monthly), delist tables, membership, assets, fundamentals, factors, macro, benchmark, dividends.
 
 ## Usage
 1) Install dependencies
@@ -61,8 +72,14 @@ conda activate quantlab-data-pipeline
 
 2) Ingest S&P500 data from WRDS (CRSP/Compustat/Fama-French/FRED)
 ```bash
-python -m src.data_pipeline.ingestion.wrds_ingestion --root . --start 2000-01-01 --end 2025-01-01 --save-raw
+python -m data_pipeline.ingestion.wrds_ingestion --start 2000-01-01 --end 2025-01-01 --save-raw
+# optional: override data root (otherwise uses $QUANTLAB_DATA_ROOT or ../quantlab_data next to the repo)
+# python -m data_pipeline.ingestion.wrds_ingestion --root /Users/edl/Documents/dev/QuantLab/quantlab_data
 ```
+- Logs: each run writes to `<data_root>/logs/wrds_ingestion_<timestamp>.log` and a run manifest to `<data_root>/data_meta/data_sources.yml` with dataset paths/sources.
+  - Defaults: `--start`=`2000-01-01`, `--end`=`2025-01-01`, `--save-raw` off.
+  - `data_sources.yml` captures run timestamp, params, and source/location for each dataset (processed + optional raw).
+  - `field_manifest.yml/csv` lists columns per dataset and is mirrored to `<data_root>/reference/field_manifest.csv`.
 
 - The ingest script now logs step-by-step progress with timings (e.g., `[3/16] Build assets master ... ✔`), plus a final summary with total runtime.
 
@@ -70,13 +87,13 @@ python -m src.data_pipeline.ingestion.wrds_ingestion --root . --start 2000-01-01
   - Preferred: `.pgpass` entry for `wrds-pgdata.wharton.upenn.edu:9737` (see WRDS docs).
   - Alternative: create `config/wrds_credentials.yml` (gitignored) from `config/wrds_credentials.example.yml`.
   - Macro requires FRED API key in `config/fred_credentials.yml` or env `FRED_API_KEY`.
-  - Raw snapshots (when `--save-raw`) go to `data_raw/`: prices_raw, prices_monthly_raw, delist tables, membership_raw, assets_master_raw (with ipo_date), fundamentals_raw, style_factors_raw, macro_raw, benchmark_raw, dividends_monthly_raw.
+  - Raw snapshots (when `--save-raw`) go to `data_raw/` in the data root: prices_raw, prices_monthly_raw, delist tables, membership_raw, assets_master_raw (with ipo_date), fundamentals_raw, style_factors_raw, macro_raw, benchmark_raw, dividends_monthly_raw.
 
 3) Load data via the handler
 ```python
-from src.data_pipeline.storage import LocalParquetDataHandler
+from data_pipeline import LocalParquetDataHandler
 
-handler = LocalParquetDataHandler(data_root=".")
+handler = LocalParquetDataHandler()  # defaults to $QUANTLAB_DATA_ROOT or ../quantlab_data
 prices = handler.get_prices(["AAPL", "MSFT"], start_date="2021-01-01", end_date="2021-03-31")
 macro = handler.get_macro("2020-01-01", "2020-12-31")
 ```
@@ -106,9 +123,18 @@ handler.get_macro("2020-01-01", "2020-03-01").head()
 # 0 2020-01-01    CPIAUCSL  2.59e+02
 # ...
 
-pd.read_parquet("data_processed/dividends_monthly.parquet").head()
+import pandas as pd
+from data_pipeline import default_data_root
+pd.read_parquet(default_data_root() / "data_processed" / "dividends_monthly.parquet").head()
 #         date  asset_id  divamt  dividend_yield  ...
 ```
+
+## Best practices & ops
+- Keep the data root outside code repos (set `QUANTLAB_DATA_ROOT`) and avoid checking parquet/logs into git.
+- Treat each ingest log + `data_sources.yml`/`field_manifest.*` as provenance for that run; archive them with the data snapshots if you copy/move data.
+- Rotate/prune old files under `<data_root>/logs/` if you run ingests frequently.
+- Prefer `LocalParquetDataHandler()` with no args so it follows the shared data root; override `processed_dir`/`meta_dir` only if your layout differs.
+- Set WRDS auth once (via `.pgpass` or `config/wrds_credentials.yml`) and FRED API via env `FRED_API_KEY` to avoid embedding secrets in notebooks/scripts.
 
 ## Tests
 ```bash

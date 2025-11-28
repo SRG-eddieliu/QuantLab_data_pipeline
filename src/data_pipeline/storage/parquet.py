@@ -6,6 +6,7 @@ from typing import Optional
 import pandas as pd
 import yaml
 
+from ..config import default_data_root
 from ..interfaces import AssetLike, DataHandler, DateLike
 
 
@@ -19,19 +20,20 @@ class LocalParquetDataHandler(DataHandler):
 
     def __init__(
         self,
-        data_root: Path,
+        data_root: Path | str | None = None,
         processed_dir: str = "data_processed",
         meta_dir: str = "data_meta",
     ):
-        super().__init__(data_root)
-        self.processed_path = (Path(data_root) / processed_dir).resolve()
-        self.meta_path = (Path(data_root) / meta_dir).resolve()
+        root = Path(data_root).expanduser().resolve() if data_root is not None else default_data_root()
+        super().__init__(root)
+        self.processed_path = (root / processed_dir).resolve()
+        self.meta_path = (root / meta_dir).resolve()
         self._assets_master_cache: Optional[pd.DataFrame] = None
         self._field_map = self._load_field_mapping()
 
     @staticmethod
     def _load_field_mapping() -> dict[str, dict[str, str]]:
-        path = Path(__file__).resolve().parents[2] / "config" / "wrds_field_map.yml"
+        path = Path(__file__).resolve().parents[3] / "config" / "wrds_field_map.yml"
         if not path.exists():
             return {}
         data = yaml.safe_load(path.read_text()) or {}

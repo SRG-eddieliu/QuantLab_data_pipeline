@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,9 +13,12 @@ import pandas as pd
 import requests
 import yaml
 
+from ..config import default_data_root
+
 
 DEFAULT_START = "2000-01-01"
 DEFAULT_END = "2025-01-01"
+logger = logging.getLogger(__name__)
 
 
 def _sql_list(values: Iterable[object]) -> str:
@@ -27,6 +31,27 @@ def _sql_list(values: Iterable[object]) -> str:
 def ensure_dirs(paths: Iterable[Path]) -> None:
     for p in paths:
         p.mkdir(parents=True, exist_ok=True)
+
+
+def _configure_logging(root: Path) -> Path:
+    """
+    Configure console + file logging under the shared data root.
+    """
+    logger.handlers.clear()
+    logger.setLevel(logging.INFO)
+    log_dir = root / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    log_path = log_dir / f"wrds_ingestion_{ts}.log"
+    formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    logger.addHandler(stream_handler)
+    logger.propagate = False
+    return log_path
 
 
 def _load_wrds_credentials(credentials_path: Path | None = None) -> Tuple[str | None, str | None]:
@@ -123,7 +148,7 @@ def _load_ipo_dates(db, universe: pd.DataFrame) -> pd.DataFrame:
         df = db.raw_sql(query, date_cols=["ipodate"])
         return df
     except Exception as exc:  # pragma: no cover - optional table
-        print(f"[WARN] comp_global_daily.g_company IPO dates unavailable ({exc}); skipping IPO enrichment.", file=sys.stderr)
+        logger.warning("comp_global_daily.g_company IPO dates unavailable (%s); skipping IPO enrichment.", exc)
         return pd.DataFrame(columns=["asset_id", "ipodate"])
 
 
@@ -198,7 +223,7 @@ def _load_dividends_monthly(db, universe: pd.DataFrame, start: str, end: str) ->
         df = db.raw_sql(query, date_cols=["date"])
         return df
     except Exception as exc:
-        print(f"[WARN] crsp.msedist not available ({exc}); skipping listed dividends.", file=sys.stderr)
+        logger.warning("crsp.msedist not available (%s); skipping listed dividends.", exc)
         return pd.DataFrame(columns=["asset_id", "distcd", "divamt", "facpr", "facshr", "date"])
 
 
@@ -351,7 +376,7 @@ def _load_dlret_daily(db, universe: pd.DataFrame, start: str, end: str) -> pd.Da
                 df[col] = None
         return df[cols]
     except Exception as exc:
-        print(f"[WARN] crsp.StkDelists not available ({exc}); skipping daily delist returns.", file=sys.stderr)
+        logger.warning("crsp.StkDelists not available (%s); skipping daily delist returns.", exc)
         return pd.DataFrame(columns=cols)
 
 
@@ -408,7 +433,7 @@ def _load_dlret_monthly(db, universe: pd.DataFrame, start: str, end: str) -> pd.
                 df[col] = None
         return df[cols]
     except Exception as exc:
-        print(f"[WARN] crsp.StkDelists not available ({exc}); skipping monthly delist returns.", file=sys.stderr)
+        logger.warning("crsp.StkDelists not available (%s); skipping monthly delist returns.", exc)
         return pd.DataFrame(columns=cols)
 
 
@@ -476,7 +501,7 @@ def _build_fundamentals_wrds(db, universe: pd.DataFrame, start: str, end: str) -
     try:
         funda = db.raw_sql(full_sql, date_cols=["datadate"])
     except Exception as exc:
-        print(f"[WARN] comp.funda missing some requested fields ({exc}); falling back to core set.", file=sys.stderr)
+        logger.warning("comp.funda missing some requested fields (%s); falling back to core set.", exc)
         core_sql = f"""
             select gvkey, datadate,
                    revt, ni, at, dltt, oancf
@@ -534,7 +559,7 @@ def _load_idxref_mapping(db, universe: pd.DataFrame, start: str, end: str) -> pd
         try:
             return db.raw_sql(query, date_cols=["start_date", "end_date"])
         except Exception as exc:
-            print(f"[WARN] tr_ibes.id query failed ({exc});", file=sys.stderr)
+            logger.warning("tr_ibes.id query failed (%s);", exc)
             return pd.DataFrame()
 
     idsum_queries = [
@@ -551,7 +576,7 @@ def _load_idxref_mapping(db, universe: pd.DataFrame, start: str, end: str) -> pd
         if not ibes_ids.empty:
             break
     if ibes_ids.empty:
-        print("[WARN] tr_ibes.id unavailable for CUSIP mapping after retries; analyst datasets will be empty.", file=sys.stderr)
+        logger.warning("tr_ibes.id unavailable for CUSIP mapping after retries; analyst datasets will be empty.")
         return pd.DataFrame(columns=base_columns)
 
     ibes_ids["end_date"] = ibes_ids["end_date"].fillna(pd.Timestamp.max)
@@ -569,10 +594,10 @@ def _load_idxref_mapping(db, universe: pd.DataFrame, start: str, end: str) -> pd
             date_cols=["start_date", "end_date"],
         )
     except Exception as exc:
-        print(f"[WARN] crsp.dsenames unavailable for CUSIP mapping ({exc}); analyst datasets will be empty.", file=sys.stderr)
+        logger.warning("crsp.dsenames unavailable for CUSIP mapping (%s); analyst datasets will be empty.", exc)
         return pd.DataFrame(columns=base_columns)
     if crsp_names.empty:
-        print("[WARN] crsp.dsenames returned no rows for CUSIP mapping; analyst datasets will be empty.", file=sys.stderr)
+        logger.warning("crsp.dsenames returned no rows for CUSIP mapping; analyst datasets will be empty.")
         return pd.DataFrame(columns=base_columns)
 
     crsp_names["end_date"] = crsp_names["end_date"].fillna(pd.Timestamp.max)
@@ -586,7 +611,7 @@ def _load_idxref_mapping(db, universe: pd.DataFrame, start: str, end: str) -> pd
         & (merged_cusip["end_date_final"] >= pd.to_datetime(start))
     ]
     if merged_cusip.empty:
-        print("[WARN] CUSIP mapping produced no matches after date filter; analyst datasets will be empty.", file=sys.stderr)
+        logger.warning("CUSIP mapping produced no matches after date filter; analyst datasets will be empty.")
         return pd.DataFrame(columns=base_columns)
 
     mapped = pd.DataFrame(
@@ -634,7 +659,7 @@ def _build_analyst_consensus_wrds(db, idxref: pd.DataFrame, start: str, end: str
         available = []
     schema, table, date_col = candidates[0]
     if table not in available:
-        print(f"[WARN] {schema}.{table} not available; consensus dataset will be empty.", file=sys.stderr)
+        logger.warning("%s.%s not available; consensus dataset will be empty.", schema, table)
         return pd.DataFrame(
             columns=[
                 "date",
@@ -678,7 +703,7 @@ def _build_analyst_consensus_wrds(db, idxref: pd.DataFrame, start: str, end: str
     try:
         recs = db.raw_sql(sql, date_cols=[date_col])
     except Exception as exc:
-        print(f"[WARN] {schema}.{table} query failed ({exc}); consensus dataset will be empty.", file=sys.stderr)
+        logger.warning("%s.%s query failed (%s); consensus dataset will be empty.", schema, table, exc)
         return pd.DataFrame(
             columns=[
                 "date",
@@ -814,10 +839,7 @@ def _build_analyst_ratings_history_wrds(db, idxref: pd.DataFrame, start: str, en
             detail = pd.DataFrame()
             continue
     if detail.empty:
-        print(
-            f"[WARN] No det_rec table available; attempted: {attempted}. Analyst rating history will be empty.",
-            file=sys.stderr,
-        )
+        logger.warning("No det_rec table available; attempted: %s. Analyst rating history will be empty.", attempted)
         return pd.DataFrame(columns=base_cols)
     # Convert date-like columns conservatively
     for col in ["statpers", "anndats", "anndats_act", "actdats", "revdats"]:
@@ -877,10 +899,7 @@ def _build_ff_factors_and_rf(db, start: str, end: str) -> tuple[pd.DataFrame, pd
     try:
         ff = db.raw_sql(sql, date_cols=["date"])
     except Exception as exc:
-        print(
-            f"[WARN] ff_all.fivefactors_daily unavailable ({exc}); retrying with core FF factors only.",
-            file=sys.stderr,
-        )
+        logger.warning("ff_all.fivefactors_daily unavailable (%s); retrying with core FF factors only.", exc)
         core_sql = f"select date, mktrf, smb, hml, rf from ff_all.factors_daily where date between '{start}' and '{end}'"
         ff = db.raw_sql(core_sql, date_cols=["date"])
         for col in ["rmw", "cma"]:
@@ -899,7 +918,7 @@ def _build_ff_factors_and_rf(db, start: str, end: str) -> tuple[pd.DataFrame, pd
         ff = ff.merge(mom, on="date", how="left")
         ff_raw = ff_raw.merge(mom, on="date", how="left")
     except Exception as exc:
-        print(f"[WARN] ff_all.factors_daily missing umd ({exc}); continuing without MOM.", file=sys.stderr)
+        logger.warning("ff_all.factors_daily missing umd (%s); continuing without MOM.", exc)
         ff["umd"] = None
         ff_raw["umd"] = None
 
@@ -955,7 +974,7 @@ def _build_macro_wrds(db, start: str, end: str) -> pd.DataFrame:
         if rows:
             frames.append(pd.DataFrame(rows))
     if not frames:
-        print("[WARN] FRED API returned no data; macro_timeseries will be empty.", file=sys.stderr)
+        logger.warning("FRED API returned no data; macro_timeseries will be empty.")
         return pd.DataFrame(columns=["date", "series_name", "value"])
     df = pd.concat(frames, ignore_index=True)
     df["date"] = pd.to_datetime(df["date"])
@@ -985,7 +1004,7 @@ def _build_benchmark_wrds(db, start: str, end: str) -> pd.DataFrame:
 def write_parquet(df: pd.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(path, index=False)
-    print(f"Wrote {len(df):,} rows to {path}")
+    logger.info("Wrote %s rows to %s", len(df), path)
 
 
 def _collect_columns(path: Path) -> list[str]:
@@ -1000,24 +1019,27 @@ def _collect_columns(path: Path) -> list[str]:
             return [f"<failed to read cols: {exc}>"]
 
 
-def ingest(root: Path, start: str, end: str, save_raw: bool = False) -> None:
+def ingest(root: Path | None, start: str, end: str, save_raw: bool = False) -> None:
     total_steps = 17
     steps_done: list[tuple[str, float]] = []
 
     def start_step(name: str) -> tuple[str, float]:
-        print(f"[{len(steps_done) + 1}/{total_steps}] {name} ...", flush=True)
+        logger.info("[%s/%s] %s ...", len(steps_done) + 1, total_steps, name)
         return name, time.time()
 
     def end_step(token: tuple[str, float]) -> None:
         name, t0 = token
         elapsed = time.time() - t0
         steps_done.append((name, elapsed))
-        print(f"  ✔ {name} ({elapsed:.1f}s)", flush=True)
+        logger.info("  ✔ %s (%.1fs)", name, elapsed)
 
-    processed_path = root / "data_processed"
-    meta_path = root / "data_meta"
-    raw_path = root / "data_raw"
-    reference_path = root / "reference"
+    resolved_root = Path(root).expanduser().resolve() if root is not None else default_data_root()
+    log_path = _configure_logging(resolved_root)
+    logger.info("Logging to %s", log_path)
+    processed_path = resolved_root / "data_processed"
+    meta_path = resolved_root / "data_meta"
+    raw_path = resolved_root / "data_raw"
+    reference_path = resolved_root / "reference"
     ensure_dirs([processed_path, meta_path, raw_path, reference_path])
 
     step = start_step("Connect to WRDS")
@@ -1130,7 +1152,7 @@ def ingest(root: Path, start: str, end: str, save_raw: bool = False) -> None:
     write_parquet(membership.rename(columns={"in_sp500": "in_universe"}), meta_path / "universe_sp500.parquet")
     write_parquet(calendar, meta_path / "trading_calendar.parquet")
 
-    log_path = meta_path / "data_sources.yml"
+    sources_log_path = meta_path / "data_sources.yml"
     log = {
         "ingested_at_utc": datetime.now(timezone.utc).isoformat(),
         "params": {"start": start, "end": end, "source": "wrds", "save_raw": save_raw},
@@ -1171,9 +1193,9 @@ def ingest(root: Path, start: str, end: str, save_raw: bool = False) -> None:
             },
         },
     }
-    with log_path.open("w", encoding="utf-8") as f:
+    with sources_log_path.open("w", encoding="utf-8") as f:
         yaml.safe_dump(log, f)
-    print(f"Wrote ingestion log to {log_path}")
+    logger.info("Wrote ingestion log to %s", sources_log_path)
 
     # Write a field manifest (processed + raw if present)
     manifest = []
@@ -1219,17 +1241,22 @@ def ingest(root: Path, start: str, end: str, save_raw: bool = False) -> None:
     df_manifest = pd.DataFrame(manifest)
     df_manifest.to_csv(manifest_path_csv, index=False)
     df_manifest.to_csv(manifest_path_csv_reference, index=False)
-    print(f"Wrote field manifest to {manifest_path_yml}, {manifest_path_csv}, and {manifest_path_csv_reference}")
+    logger.info("Wrote field manifest to %s, %s, and %s", manifest_path_yml, manifest_path_csv, manifest_path_csv_reference)
     end_step(step)
 
     total_elapsed = sum(t for _, t in steps_done)
     summary = ", ".join(f"{name} {t:.1f}s" for name, t in steps_done)
-    print(f"Done in {total_elapsed:.1f}s. Steps: {summary}")
+    logger.info("Done in %.1fs. Steps: %s", total_elapsed, summary)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Ingest S&P500 data from WRDS into local Parquet files.")
-    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[3], help="Project root.")
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=default_data_root(),
+        help="Data root (defaults to env QUANTLAB_DATA_ROOT or ../quantlab_data next to repo).",
+    )
     parser.add_argument("--start", type=str, default=DEFAULT_START, help="Start date (YYYY-MM-DD)")
     parser.add_argument("--end", type=str, default=DEFAULT_END, help="End date (YYYY-MM-DD)")
     parser.add_argument("--save-raw", action="store_true", help="Also write raw WRDS price panel to data_raw/.")

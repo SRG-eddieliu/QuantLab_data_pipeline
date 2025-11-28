@@ -1,4 +1,4 @@
-from .config import load_config
+from .config import default_data_root, load_config
 from .interfaces import AssetLike, DataHandler, DateLike
 from .ingestion import DEFAULT_END, DEFAULT_START, ingest
 from .storage import LocalParquetDataHandler
@@ -8,6 +8,7 @@ __all__ = [
     "DataHandler",
     "DateLike",
     "LocalParquetDataHandler",
+    "default_data_root",
     "DEFAULT_START",
     "DEFAULT_END",
     "ingest",

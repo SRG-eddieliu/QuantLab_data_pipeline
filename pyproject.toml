@@ -1,25 +1,27 @@
-[build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
-name = "quantlab_data_pipeline"
-version = "0.0.1"
-description = "Data pipeline and unified access layer for equity datasets."
+name = "quantlab_factor_library"
+version = "0.1.0"
+description = "Cross-sectional equity factor library built on quantlab_data_pipeline"
+authors = [{name = "QuantLab", email = "dev@example.com"}]
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [{ name = "QuantLab Team" }]
+license = {text = "MIT"}
 dependencies = [
-    "numpy>=1.26",
-    "pandas>=2.1",
-    "pyarrow>=14.0",
-    "pyyaml>=6.0",
-    "yfinance>=0.2",
+    "numpy>=1.23",
+    "pandas>=1.5",
+    "pyarrow>=12.0",
 ]
+
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["factor_library*"]
 
-[project.optional-dependencies]
-dev = ["pytest>=7.4"]
-wrds = ["wrds>=3.1"]
+[tool.setuptools.package-data]
+quantlab_factor_library = ["config/*.yml", "factor_metadata/**/*.yaml"]
