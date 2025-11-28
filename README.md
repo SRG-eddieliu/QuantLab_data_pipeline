@@ -20,7 +20,7 @@ Lean data ingestion and access layer for equity datasets (WRDS + FRED). Builds S
 
 ## Repository layout
 ```
-QuantLab_data_pipeline/
+quantlab_data_pipeline/
   config/
     wrds_credentials.yml         # WRDS creds (gitignored; use example)
     fred_credentials.yml         # FRED API key (gitignored; use example)
@@ -74,7 +74,7 @@ conda activate quantlab-data-pipeline
 ```bash
 python -m data_pipeline.ingestion.wrds_ingestion --start 2000-01-01 --end 2025-01-01 --save-raw
 # optional: override data root (otherwise uses $QUANTLAB_DATA_ROOT or ../quantlab_data next to the repo)
-# python -m data_pipeline.ingestion.wrds_ingestion --root /Users/edl/Documents/dev/QuantLab/quantlab_data
+# python -m data_pipeline.ingestion.wrds_ingestion --root /Users/edl/Documents/dev/quantlab/quantlab_data
 ```
 - Logs: each run writes to `<data_root>/logs/wrds_ingestion_<timestamp>.log` and a run manifest to `<data_root>/data_meta/data_sources.yml` with dataset paths/sources.
   - Defaults: `--start`=`2000-01-01`, `--end`=`2025-01-01`, `--save-raw` off.
