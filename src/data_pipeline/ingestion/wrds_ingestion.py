@@ -13,7 +13,7 @@ import pandas as pd
 import requests
 import yaml
 
-from ..config import default_data_root
+from ..config import default_data_root, resolve_data_root
 
 
 DEFAULT_START = "2000-01-01"
@@ -1033,7 +1033,7 @@ def ingest(root: Path | None, start: str, end: str, save_raw: bool = False) -> N
         steps_done.append((name, elapsed))
         logger.info("  ✔ %s (%.1fs)", name, elapsed)
 
-    resolved_root = Path(root).expanduser().resolve() if root is not None else default_data_root()
+    resolved_root = resolve_data_root(root)
     log_path = _configure_logging(resolved_root)
     logger.info("Logging to %s", log_path)
     processed_path = resolved_root / "data_processed"
@@ -1255,7 +1255,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--root",
         type=Path,
         default=default_data_root(),
-        help="Data root (defaults to env QUANTLAB_DATA_ROOT or ../quantlab_data next to repo).",
+        help="Base data folder (defaults to env QUANTLAB_DATA_ROOT or ../quantlab_data); pipeline files go under <root>/quantlab_data_pipeline/.",
     )
     parser.add_argument("--start", type=str, default=DEFAULT_START, help="Start date (YYYY-MM-DD)")
     parser.add_argument("--end", type=str, default=DEFAULT_END, help="End date (YYYY-MM-DD)")

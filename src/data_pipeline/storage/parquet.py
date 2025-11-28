@@ -6,7 +6,7 @@ from typing import Optional
 import pandas as pd
 import yaml
 
-from ..config import default_data_root
+from ..config import resolve_data_root
 from ..interfaces import AssetLike, DataHandler, DateLike
 
 
@@ -24,7 +24,7 @@ class LocalParquetDataHandler(DataHandler):
         processed_dir: str = "data_processed",
         meta_dir: str = "data_meta",
     ):
-        root = Path(data_root).expanduser().resolve() if data_root is not None else default_data_root()
+        root = resolve_data_root(data_root)
         super().__init__(root)
         self.processed_path = (root / processed_dir).resolve()
         self.meta_path = (root / meta_dir).resolve()

@@ -32,21 +32,23 @@ quantlab_data_pipeline/
   notebooks/
 ```
 
-**Data root**: outputs are written outside the repo by default under a sibling `../quantlab_data/` folder (or whatever `QUANTLAB_DATA_ROOT` points to). That directory will contain `data_processed/`, `data_meta/`, `data_raw/`, and `reference/`. Keep datasets out of the code repo. Set a custom location via `export QUANTLAB_DATA_ROOT=/path/to/quantlab_data`.
+**Data root**: outputs live outside the repo under a shared `../quantlab_data/` folder (or `$QUANTLAB_DATA_ROOT` if set), inside a pipeline-specific subfolder `quantlab_data_pipeline/`. That subfolder contains `data_processed/`, `data_meta/`, `data_raw/`, `reference/`, and `logs/`. Keep datasets out of the code repo. Point `QUANTLAB_DATA_ROOT` to your shared quant data folder (e.g., `export QUANTLAB_DATA_ROOT=/path/to/quantlab_data`) and the pipeline will write to `<root>/quantlab_data_pipeline/`.
 
-**Data root resolution order**
+**Data root resolution order (base folder)**
 1) Env var `QUANTLAB_DATA_ROOT`
 2) Sibling `../quantlab_data` next to this repo (detected via `pyproject.toml`)
 3) Fallback: `./quantlab_data` under the current working directory
 
-**Outputs under the data root**
+Pipeline outputs default to `<base>/quantlab_data_pipeline/` so the shared quant data folder can host other datasets. If the base already contains `data_processed/`/`data_meta/` (legacy layout), that path is used directly.
+
+**Outputs under the pipeline root**
 - `data_processed/`: canonical, cleaned parquet tables (prices, returns, fundamentals, factors, macro, benchmarks, analyst data, dividends)
 - `data_meta/`: metadata (`assets_master.parquet`, `universe_sp500.parquet`, `trading_calendar.parquet`, `data_sources.yml`, `field_manifest.*`)
 - `data_raw/`: optional raw snapshots when `--save-raw` is set
 - `reference/`: copy of `field_manifest.csv` for easy browsing
 - `logs/`: per-run ingestion logs (`wrds_ingestion_<timestamp>.log`)
 
-Key datasets written under `data_processed/` (in the shared data root):
+Key datasets written under `data_processed/` (in the pipeline root):
 - `prices_daily.parquet`, `returns_daily.parquet` (CRSP DSF, with `shrout`; delist-adjusted if delret present)
 - `returns_monthly.parquet` (CRSP MSF, delist-adjusted if delret present)
 - `fundamentals_quarterly.parquet` (Compustat via CCM link, renamed per `wrds_field_map.yml`)
@@ -73,13 +75,13 @@ conda activate quantlab-data-pipeline
 2) Ingest S&P500 data from WRDS (CRSP/Compustat/Fama-French/FRED)
 ```bash
 python -m data_pipeline.ingestion.wrds_ingestion --start 2000-01-01 --end 2025-01-01 --save-raw
-# optional: override data root (otherwise uses $QUANTLAB_DATA_ROOT or ../quantlab_data next to the repo)
+# optional: override the base data folder (otherwise uses $QUANTLAB_DATA_ROOT or ../quantlab_data; pipeline writes to <root>/quantlab_data_pipeline/)
 # python -m data_pipeline.ingestion.wrds_ingestion --root /Users/edl/Documents/dev/quantlab/quantlab_data
 ```
-- Logs: each run writes to `<data_root>/logs/wrds_ingestion_<timestamp>.log` and a run manifest to `<data_root>/data_meta/data_sources.yml` with dataset paths/sources.
-  - Defaults: `--start`=`2000-01-01`, `--end`=`2025-01-01`, `--save-raw` off.
-  - `data_sources.yml` captures run timestamp, params, and source/location for each dataset (processed + optional raw).
-  - `field_manifest.yml/csv` lists columns per dataset and is mirrored to `<data_root>/reference/field_manifest.csv`.
+- Logs: each run writes to `<data_root>/logs/wrds_ingestion_<timestamp>.log` (where `data_root` is the pipeline folder, e.g., `<base>/quantlab_data_pipeline`) and a run manifest to `<data_root>/data_meta/data_sources.yml` with dataset paths/sources.
+- Defaults: `--start`=`2000-01-01`, `--end`=`2025-01-01`, `--save-raw` off.
+- `data_sources.yml` captures run timestamp, params, and source/location for each dataset (processed + optional raw).
+- `field_manifest.yml/csv` lists columns per dataset and is mirrored to `<data_root>/reference/field_manifest.csv`.
 
 - The ingest script now logs step-by-step progress with timings (e.g., `[3/16] Build assets master ... ✔`), plus a final summary with total runtime.
 
@@ -93,7 +95,7 @@ python -m data_pipeline.ingestion.wrds_ingestion --start 2000-01-01 --end 2025-0
 ```python
 from data_pipeline import LocalParquetDataHandler
 
-handler = LocalParquetDataHandler()  # defaults to $QUANTLAB_DATA_ROOT or ../quantlab_data
+handler = LocalParquetDataHandler()  # defaults to <base>/quantlab_data_pipeline/ (base from $QUANTLAB_DATA_ROOT or ../quantlab_data)
 prices = handler.get_prices(["AAPL", "MSFT"], start_date="2021-01-01", end_date="2021-03-31")
 macro = handler.get_macro("2020-01-01", "2020-12-31")
 ```
